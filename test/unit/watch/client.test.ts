@@ -10,6 +10,8 @@ class FakeWebSocket {
   readyState = 0;
   sent: Uint8Array[] = [];
   closed = false;
+  // A dead link: close() starts the handshake but onclose never comes.
+  deaf = false;
   onopen: (() => void) | null = null;
   onmessage: ((e: { data: ArrayBuffer }) => void) | null = null;
   onclose: ((e: { code: number; reason: string }) => void) | null = null;
@@ -26,6 +28,7 @@ class FakeWebSocket {
   close() {
     if (this.closed) return;
     this.closed = true;
+    if (this.deaf) return;
     this.readyState = 3;
     this.onclose?.({ code: 1000, reason: '' });
   }
@@ -47,11 +50,18 @@ class FakeWebSocket {
 const channels: Channels = { runningTradeBatch: ['*'], orderBook: [], livePrice: [] };
 const last = () => FakeWebSocket.all[FakeWebSocket.all.length - 1]!;
 
-function makeClient(tokens = { token: vi.fn(async () => 'tok'), refresh: vi.fn(async () => true) }) {
+function makeClient(
+  tokens: { token: () => Promise<string | undefined>; refresh: (k: 'exodus' | 'trading', t: string) => Promise<boolean> } = {
+    token: vi.fn(async () => 'tok'),
+    refresh: vi.fn(async () => true),
+  },
+  onAuthFailed?: () => void,
+) {
   const events: Array<{ ev: FeedEvent; raw: Uint8Array }> = [];
   const client = new DatafeedClient({
     userId: '5',
     tokens,
+    ...(onAuthFailed ? { onAuthFailed } : {}),
     WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
     logger: createLogger('silent'),
     onEvent: (ev, raw) => events.push({ ev, raw }),
@@ -170,6 +180,60 @@ describe('DatafeedClient', () => {
     expect(events).toHaveLength(1);
     expect(events[0]!.ev.kind).toBe('trades');
     expect([...events[0]!.raw]).toEqual([...frame]);
+    client.stop();
+  });
+
+  it('a missed pong reconnects even when the dead socket never reports close', async () => {
+    const { client } = makeClient();
+    client.start();
+    const ws = last();
+    ws.deaf = true;
+    ws.open();
+    await vi.advanceTimersByTimeAsync(15_000 + 5_000 + 1_000);
+    expect(FakeWebSocket.all).toHaveLength(2);
+    client.stop();
+  });
+
+  it('a failed refresh tells the caller once and backs off to 5 minutes', async () => {
+    const onAuthFailed = vi.fn();
+    const tokens = { token: vi.fn(async () => 'dead'), refresh: vi.fn(async () => false) };
+    const { client } = makeClient(tokens, onAuthFailed);
+    client.start();
+    last().open();
+    await vi.advanceTimersByTimeAsync(0);
+    last().receive(errorFrame(401, 'Unauthorized Connection'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onAuthFailed).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(FakeWebSocket.all).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(240_000);
+    expect(FakeWebSocket.all).toHaveLength(2);
+    last().open();
+    await vi.advanceTimersByTimeAsync(0);
+    last().receive(errorFrame(401, 'Unauthorized Connection'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onAuthFailed).toHaveBeenCalledTimes(1);
+    client.stop();
+  });
+
+  it('a token read that throws schedules a reconnect instead of an unhandled rejection', async () => {
+    let calls = 0;
+    const tokens = {
+      token: vi.fn(async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('session file busy');
+        return 'tok';
+      }),
+      refresh: vi.fn(async () => true),
+    };
+    const { client } = makeClient(tokens);
+    client.start();
+    last().open();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(FakeWebSocket.all).toHaveLength(2);
+    last().open();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(last().sent[0]).toEqual(encodeSubscribe('5', 'tok', channels));
     client.stop();
   });
 

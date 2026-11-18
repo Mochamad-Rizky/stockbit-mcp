@@ -9,6 +9,8 @@ export const DATAFEED_URL = 'wss://wss-jkt.trading.stockbit.com/ws';
 export const PING_MS = 15_000;
 export const PONG_TIMEOUT_MS = 5_000;
 const MAX_BACKOFF_MS = 30_000;
+// While the session cannot be refreshed, reconnect this rarely (and tell the user once).
+const AUTH_BACKOFF_MS = 5 * 60_000;
 // A connection that stayed up this long resets the backoff.
 const STABLE_MS = 60_000;
 
@@ -19,6 +21,8 @@ export interface DatafeedOptions {
   WebSocketImpl?: typeof WebSocket;
   logger: Logger;
   onEvent(ev: FeedEvent, raw: Uint8Array, at: number): void;
+  // Called once when the session is rejected and cannot be refreshed (the user must log in again).
+  onAuthFailed?: () => void;
   now?: () => number;
 }
 
@@ -34,6 +38,8 @@ export class DatafeedClient {
   private pingTimer: ReturnType<typeof setInterval> | undefined;
   private pongTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private authBroken = false;
+  private authNotified = false;
   private readonly now: () => number;
 
   constructor(private readonly o: DatafeedOptions) {
@@ -85,11 +91,18 @@ export class DatafeedClient {
 
   private async onOpen(ws: WebSocket): Promise<void> {
     this.openedAt = this.now();
-    const token = await this.o.tokens.token('exodus');
+    let token: string | undefined;
+    try {
+      token = await this.o.tokens.token('exodus');
+    } catch (error) {
+      this.o.logger.warn('datafeed: could not read the session', { error: error instanceof Error ? error.message : String(error) });
+      this.drop(ws);
+      return;
+    }
     if (ws !== this.ws) return;
     if (!token) {
       this.o.logger.warn('datafeed: no Stockbit session (AUTH_REQUIRED); run stockbit-mcp login');
-      ws.close();
+      this.drop(ws);
       return;
     }
     this.token = token;
@@ -101,8 +114,9 @@ export class DatafeedClient {
       ws.send(encodePing());
       clearTimeout(this.pongTimer);
       this.pongTimer = setTimeout(() => {
+        // On a dead link close() never completes, so do not wait for onclose.
         this.o.logger.warn('datafeed: no pong, reconnecting');
-        ws.close();
+        this.drop(ws);
       }, PONG_TIMEOUT_MS);
     }, PING_MS);
   }
@@ -119,8 +133,18 @@ export class DatafeedClient {
         void this.o.tokens
           .refresh('exodus', rejected)
           .catch(() => false)
-          .finally(() => {
-            if (ws === this.ws) ws.close();
+          .then((ok) => {
+            if (ok) {
+              this.authBroken = false;
+              this.authNotified = false;
+            } else {
+              this.authBroken = true;
+              if (!this.authNotified) {
+                this.authNotified = true;
+                this.o.onAuthFailed?.();
+              }
+            }
+            if (ws === this.ws) this.drop(ws);
           });
       }
     }
@@ -130,15 +154,40 @@ export class DatafeedClient {
 
   private onClose(ws: WebSocket): void {
     if (ws !== this.ws) return;
+    this.detach(ws);
+    this.scheduleReconnect();
+  }
+
+  // Forget a socket without waiting for its close handshake, then reconnect.
+  private drop(ws: WebSocket): void {
+    if (ws !== this.ws) return;
+    this.detach(ws);
+    try {
+      ws.close();
+    } catch {
+      // already closing
+    }
+    this.scheduleReconnect();
+  }
+
+  private detach(ws: WebSocket): void {
+    ws.onopen = null;
+    ws.onmessage = null;
+    ws.onclose = null;
+    ws.onerror = null;
     this.clearTimers();
     this.subscribed = false;
     this.ws = undefined;
+  }
+
+  private scheduleReconnect(): void {
     if (this.stopped) return;
     if (this.openedAt && this.now() - this.openedAt >= STABLE_MS) this.attempt = 0;
     this.openedAt = 0;
-    const delay = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** this.attempt);
+    const delay = this.authBroken ? AUTH_BACKOFF_MS : Math.min(MAX_BACKOFF_MS, 1000 * 2 ** this.attempt);
     this.attempt += 1;
     this.o.logger.info('datafeed closed, reconnecting', { inMs: delay });
+    clearTimeout(this.reconnectTimer);
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
 
