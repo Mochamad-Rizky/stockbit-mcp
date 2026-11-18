@@ -15,6 +15,8 @@ export interface TradePlan {
   rr: number;
   lots: number;
   riskIdr: number;
+  // The share of the balance risked (0.01 = 1%).
+  riskPct: number;
   lotBasis: 'balance' | 'fixed';
   waitPrice?: number;
   note?: string;
@@ -79,6 +81,7 @@ export function makePlan(sig: Signal, ctx: PlanContext): TradePlan {
     rr: r > 0 ? Math.round(((tp1 - entryHigh) / r) * 10) / 10 : 0,
     lots: 0,
     riskIdr,
+    riskPct: pct,
     lotBasis: ctx.cash === undefined ? 'fixed' : 'balance',
     ...(waitPrice === undefined ? {} : { waitPrice: entryHigh }),
   };

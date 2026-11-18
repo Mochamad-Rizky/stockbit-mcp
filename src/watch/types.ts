@@ -103,3 +103,20 @@ export interface Signal {
   at: number;
   refs: PlanRefs;
 }
+
+export interface RiskLabels {
+  notations: string[];
+  uma: boolean;
+  toAraPct?: number;
+  fca: boolean;
+}
+
+// A signal that passed its threshold, with its plan, ready to send.
+export interface Alert {
+  signal: Signal;
+  score: number;
+  plan?: import('./plan.js').TradePlan;
+  risk: RiskLabels;
+  // changePct is a fraction of the previous close (0.038 = +3.8%).
+  price: { last: number; changePct: number };
+}
