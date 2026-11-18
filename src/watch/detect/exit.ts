@@ -26,16 +26,25 @@ export function holdingPlan(h: Holding, refs: PlanRefs, cfg: WatchConfig): Holdi
   return { stop, tp1: ceilTick(h.avgPrice + 1.5 * r), tp2: ceilTick(h.avgPrice + 2.5 * r) };
 }
 
-export function detectExit(h: Holding, tape: SymbolTape, plan: HoldingLevels, now: number, cfg: WatchConfig): Signal[] {
+// Stop and target fire when the price crosses them since the previous look (`prevLast`), so a level
+// a holding was already past when the bot started does not alert; the first look only records.
+export function detectExit(
+  h: Holding,
+  tape: SymbolTape,
+  plan: HoldingLevels,
+  now: number,
+  cfg: WatchConfig,
+  prevLast: number | undefined,
+): Signal[] {
   const last = tape.day().last;
   if (!last) return [];
   const held = `Kamu pegang ${idNum(h.lots)} lot, rata-rata ${idNum(h.avgPrice)}`;
   const refs: PlanRefs = { last, dayLow: tape.day().low };
   const base = { style: 'exit' as const, symbol: h.symbol, components: [], at: now, refs };
   const out: Signal[] = [];
-  if (last <= plan.stop) {
+  if (prevLast !== undefined && prevLast > plan.stop && last <= plan.stop) {
     out.push({ ...base, setup: 'exit_stop', title: 'Tembus stop', action: 'JUAL', facts: [held, `Harga ${idNum(last)} ≤ stop ${idNum(plan.stop)}`] });
-  } else if (last >= plan.tp1) {
+  } else if (prevLast !== undefined && prevLast < plan.tp1 && last >= plan.tp1) {
     out.push({
       ...base, setup: 'exit_target', title: 'Target tercapai', action: 'AMANKAN',
       facts: [held, `Harga ${idNum(last)} ≥ TP1 ${idNum(plan.tp1)} (TP2 ${idNum(plan.tp2)})`],

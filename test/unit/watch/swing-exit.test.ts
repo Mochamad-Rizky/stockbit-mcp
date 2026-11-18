@@ -60,14 +60,20 @@ describe('exit warnings', () => {
     expect(holdingPlan(h, { last: 1010 }, cfg)).toEqual({ stop: 950, tp1: 1075, tp2: 1125 });
   });
 
-  it('exit stop fires once the price trades at or under the stop, target at tp1', () => {
+  it('exit warnings fire when the price crosses a level, not for a level already passed', () => {
     const t = new SymbolTape();
     t.add(trade('X', 1000, 10, 'buy', T0));
     t.add(trade('X', 950, 10, 'sell', T0 + 1000));
     const plan = { stop: 950, tp1: 1075, tp2: 1125 };
-    expect(detectExit(h, t, plan, T0 + 2000, cfg).map((s) => [s.setup, s.action])).toEqual([['exit_stop', 'JUAL']]);
+    // first look after start: nothing, whatever the level
+    expect(detectExit(h, t, plan, T0 + 2000, cfg, undefined)).toEqual([]);
+    // from 960 down to 950: stop crossed
+    expect(detectExit(h, t, plan, T0 + 2000, cfg, 960).map((s) => [s.setup, s.action])).toEqual([['exit_stop', 'JUAL']]);
+    // already under the stop on the previous look: no repeat
+    expect(detectExit(h, t, plan, T0 + 2000, cfg, 945)).toEqual([]);
     t.add(trade('X', 1080, 10, 'buy', T0 + 3000));
-    expect(detectExit(h, t, plan, T0 + 4000, cfg).map((s) => [s.setup, s.action])).toEqual([['exit_target', 'AMANKAN']]);
+    expect(detectExit(h, t, plan, T0 + 4000, cfg, 1070).map((s) => [s.setup, s.action])).toEqual([['exit_target', 'AMANKAN']]);
+    expect(detectExit(h, t, plan, T0 + 4000, cfg, 1078)).toEqual([]);
   });
 });
 

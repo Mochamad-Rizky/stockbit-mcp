@@ -59,6 +59,8 @@ export class Pipeline {
   private readonly quotes = new Map<string, Promise<Quote>>();
   private readonly prices = new Map<string, LivePrice>();
   private readonly pending = new Set<Promise<void>>();
+  // Last price seen per holding, so exit levels alert on crossing.
+  private readonly holdingLast = new Map<string, number>();
   private channelsKey = '';
   private lastTick = 0;
 
@@ -166,7 +168,8 @@ export class Pipeline {
       const refs: PlanRefs = { last: day.last, dayLow: day.low };
       const wall = book?.walls('bid', this.d.cfg.book.wallPersistSec, at).filter((w) => w.price <= day.last).sort((a, b) => b.price - a.price)[0];
       if (wall) refs.bidWall = wall.price;
-      signals.push(...detectExit(holding, tape, holdingPlan(holding, refs, this.d.cfg), at, this.d.cfg));
+      signals.push(...detectExit(holding, tape, holdingPlan(holding, refs, this.d.cfg), at, this.d.cfg, this.holdingLast.get(symbol)));
+      this.holdingLast.set(symbol, day.last);
     }
     const value5m = tape.window(300, at).value;
     for (const s of signals) await this.emit(s, info, book, value5m);
