@@ -55,3 +55,51 @@ export interface Channels {
   orderBook: string[];
   livePrice: string[];
 }
+
+export type Style = 'scalp' | 'day' | 'swing' | 'exit';
+
+export type Setup =
+  | 'haka_sweep'
+  | 'offer_thinning'
+  | 'big_lot_burst'
+  | 'rvol_spike'
+  | 'day_high_break'
+  | 'accumulation'
+  | 'markup'
+  | 'distribution'
+  | 'swing_accumulation'
+  | 'exit_distribution'
+  | 'exit_stop'
+  | 'exit_target';
+
+export type Action = 'BELI' | 'TUNGGU' | 'HINDARI' | 'JUAL' | 'AMANKAN';
+
+export interface ScoreComponent {
+  label: string;
+  points: number;
+}
+
+// Price levels a signal saw, for the trade plan.
+export interface PlanRefs {
+  last: number;
+  vwap?: number;
+  dayLow?: number;
+  bidWall?: number;
+  offerWall?: number;
+  swingLow?: number;
+  ma20?: number;
+  nDayHigh?: number;
+}
+
+export interface Signal {
+  style: Style;
+  symbol: string;
+  setup: Setup;
+  // Indonesian, shown in the notification.
+  title: string;
+  action: Action;
+  facts: string[];
+  components: ScoreComponent[];
+  at: number;
+  refs: PlanRefs;
+}

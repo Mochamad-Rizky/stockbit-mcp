@@ -76,6 +76,8 @@ function merge(into: WindowStats, b: WindowStats): void {
 export class SymbolTape {
   private readonly buckets: Bucket[] = [];
   private readonly dayStats = empty();
+  // High of the buckets already dropped from the 15-minute window.
+  private prunedHigh = 0;
   private open = 0;
   private shares = 0;
   private readonly lots: number[] = [];
@@ -104,7 +106,9 @@ export class SymbolTape {
     }
     addTo(bucket, t, lot, big);
     this.lastTime = Math.max(this.lastTime, t.time);
-    while (this.buckets.length > 0 && this.buckets[0]!.sec <= sec - KEEP_SEC) this.buckets.shift();
+    while (this.buckets.length > 0 && this.buckets[0]!.sec <= sec - KEEP_SEC) {
+      this.prunedHigh = Math.max(this.prunedHigh, this.buckets.shift()!.high);
+    }
   }
 
   // Trades in the last `sec` seconds before `now` (ms).
@@ -113,6 +117,14 @@ export class SymbolTape {
     const out = empty();
     for (const b of this.buckets) if (b.sec > from) merge(out, b);
     return out;
+  }
+
+  // The day's high before the last `sec` seconds (0 when nothing traded before then).
+  highBefore(sec: number, now: number): number {
+    const until = Math.floor(now / 1000) - sec;
+    let high = this.prunedHigh;
+    for (const b of this.buckets) if (b.sec <= until && b.trades > 0) high = Math.max(high, b.high);
+    return high;
   }
 
   day(): WindowStats & { open: number; vwap: number } {

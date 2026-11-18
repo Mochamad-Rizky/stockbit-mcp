@@ -66,3 +66,15 @@ describe('Tape', () => {
     expect(tape.get('C')).toBeUndefined();
   });
 });
+
+describe('SymbolTape.highBefore', () => {
+  it('is the day high excluding the last N seconds, including pruned buckets', () => {
+    const t = new SymbolTape();
+    t.add(trade('A', 120, 1, 'buy', T0));
+    t.add(trade('A', 110, 1, 'buy', T0 + 20 * 60_000));
+    t.add(trade('A', 125, 1, 'buy', T0 + 20 * 60_000 + 30_000));
+    expect(t.highBefore(60, T0 + 20 * 60_000 + 31_000)).toBe(120);
+    expect(t.highBefore(10, T0 + 20 * 60_000 + 50_000)).toBe(125);
+    expect(new SymbolTape().highBefore(60, T0)).toBe(0);
+  });
+});
