@@ -17,5 +17,8 @@ export function macosSender(exec: Exec = defaultExec): Sender {
     async send(_a, text) {
       await exec('osascript', ['-e', `display notification ${quote(text.macos.body)} with title ${quote(text.macos.title)}`]);
     },
+    async text(message) {
+      await exec('osascript', ['-e', `display notification ${quote(message)} with title ${quote('stockbit-mcp watch')}`]);
+    },
   };
 }

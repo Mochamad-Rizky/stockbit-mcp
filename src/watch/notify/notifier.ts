@@ -9,6 +9,8 @@ import { formatMacos, formatTelegram } from './format.js';
 export interface Sender {
   name: string;
   send(a: Alert, text: { telegram: string; macos: { title: string; body: string } }): Promise<void>;
+  // A plain message that is not an alert (a session notice).
+  text?(message: string): Promise<void>;
 }
 
 export interface NotifierOptions {
@@ -51,10 +53,21 @@ export class Notifier {
     if (!exit) this.count += 1;
 
     const text = { telegram: formatTelegram(a, now), macos: formatMacos(a) };
+    await this.fanOut(now, (s) => s.send(a, text));
+    this.o.recorder?.alert({ at: now, ...a });
+    return true;
+  }
+
+  // A message outside the alert gate (no cooldown, no cap).
+  async notice(message: string): Promise<void> {
+    await this.fanOut(this.now(), (s) => s.text?.(message) ?? Promise.resolve());
+  }
+
+  private async fanOut(now: number, call: (s: Sender) => Promise<void>): Promise<void> {
     await Promise.all(
       this.o.senders.map(async (s) => {
         try {
-          await s.send(a, text);
+          await call(s);
         } catch (error) {
           const lastLog = this.lastFailureLog.get(s.name) ?? 0;
           if (now - lastLog >= 60_000) {
@@ -64,7 +77,5 @@ export class Notifier {
         }
       }),
     );
-    this.o.recorder?.alert({ at: now, ...a });
-    return true;
   }
 }

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { passwordLogin, tokenLogin, tradingLogin } from './cli/login.js';
+import { watchCommand } from './cli/watch.js';
 import { AuthService } from './core/auth.js';
 import { BrowserFetch } from './core/browser.js';
 import { loadConfig } from './core/config.js';
@@ -21,6 +22,11 @@ Usage:
   stockbit-mcp logout [--trading]
   stockbit-mcp status           Show the login state (never the tokens)
   stockbit-mcp tools            List the tools
+  stockbit-mcp watch            Run the alert bot (realtime feed, alerts to macOS and Telegram)
+  stockbit-mcp watch --dry-run  Same, but print alerts instead of sending them
+  stockbit-mcp watch --replay <file.bin.gz>   Run a recorded day through the rules
+  stockbit-mcp watch --setup-telegram         Link a Telegram bot made with @BotFather
+  stockbit-mcp watch --install  Start the bot on weekday mornings (LaunchAgent)
 
 Requests go through Chromium (Stockbit's Cloudflare blocks other clients). Its windows open
 minimized in the background (STOCKBIT_MCP_BROWSER_WINDOW), and it closes 2 s after the last request
@@ -48,7 +54,7 @@ async function main(argv: string[]): Promise<number> {
   const store = createFileSessionStore(config.home);
   // Chromium starts on the first request only, so status, logout and tools never open it.
   // A login polls for the phone approval every 2 s, so it keeps one window until it is done.
-  const idleMs = command === 'serve' ? config.browser.idleMs : Number.POSITIVE_INFINITY;
+  const idleMs = command === 'serve' || command === 'watch' ? config.browser.idleMs : Number.POSITIVE_INFINITY;
   const browser =
     config.http === 'browser' ? new BrowserFetch({ ...config.browser, idleMs, logger }) : undefined;
   const fetchImpl = browser ? { fetch: browser.fetch } : {};
@@ -87,6 +93,12 @@ async function main(argv: string[]): Promise<number> {
     case 'status':
       process.stdout.write(`${JSON.stringify(await auth.status(), null, 2)}\n`);
       return 0;
+    case 'watch':
+      try {
+        return await watchCommand(rest, { config, logger, store, auth, ...fetchImpl });
+      } finally {
+        await browser?.close();
+      }
     case 'tools':
       for (const tool of allTools()) process.stdout.write(`${tool.name}\t${tool.title}\n`);
       return 0;

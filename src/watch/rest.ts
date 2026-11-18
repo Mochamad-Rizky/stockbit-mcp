@@ -53,11 +53,13 @@ async function maybe<T>(read: () => Promise<T>): Promise<T | undefined> {
   }
 }
 
-export async function getAraArb(http: Http, symbol: string): Promise<{ ara?: number; arb?: number }> {
+// Today's ARA/ARB band and the previous close, from the order-book REST.
+export async function getAraArb(http: Http, symbol: string): Promise<{ ara?: number; arb?: number; prev?: number }> {
   const data = await maybe(() => getJson(http, `/company-price-feed/v2/orderbook/companies/${encodeURIComponent(symbol)}`));
   const ara = num(field(data, 'ara', 'value'));
   const arb = num(field(data, 'arb', 'value'));
-  return { ...(ara === undefined ? {} : { ara }), ...(arb === undefined ? {} : { arb }) };
+  const prev = num(field(data, 'previous'));
+  return { ...(ara === undefined ? {} : { ara }), ...(arb === undefined ? {} : { arb }), ...(prev === undefined ? {} : { prev }) };
 }
 
 export interface Bandar {

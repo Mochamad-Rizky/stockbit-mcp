@@ -6,20 +6,22 @@ import type { Sender } from './notifier.js';
 const API = 'https://api.telegram.org';
 
 export function telegramSender(token: string, chatId: string, fetchImpl: typeof fetch = fetch): Sender {
+  const post = async (message: string) => {
+    const res = await fetchImpl(`${API}/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text: message, disable_web_page_preview: true }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { description?: string };
+      throw new Error(`Telegram ${res.status}: ${body.description ?? res.statusText}`);
+    }
+  };
   return {
     name: 'telegram',
-    async send(_a, text) {
-      const res = await fetchImpl(`${API}/bot${token}/sendMessage`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text: text.telegram, disable_web_page_preview: true }),
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { description?: string };
-        throw new Error(`Telegram ${res.status}: ${body.description ?? res.statusText}`);
-      }
-    },
+    send: (_a, text) => post(text.telegram),
+    text: post,
   };
 }
 
