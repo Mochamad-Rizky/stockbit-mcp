@@ -32,7 +32,7 @@ const CHANNEL_FIELDS: Record<keyof Channels, number> = {
 };
 
 // WebsocketRequest{1 user_id, 2 channel, 5 access_token}.
-export function encodeSubscribe(userId: string, token: string, ch: Channels): Uint8Array {
+export function encodeSubscribe(userId: string, token: string, ch: Channels): Uint8Array<ArrayBuffer> {
   const channel: number[] = [];
   for (const key of ['orderBook', 'runningTradeBatch', 'livePrice'] as const) {
     for (const symbol of ch[key]) channel.push(...strField(CHANNEL_FIELDS[key], symbol));
@@ -41,7 +41,7 @@ export function encodeSubscribe(userId: string, token: string, ch: Channels): Ui
 }
 
 // WebsocketRequest{4 ping{1 "ping"}}.
-export function encodePing(): Uint8Array {
+export function encodePing(): Uint8Array<ArrayBuffer> {
   return new Uint8Array(lenField(4, strField(1, 'ping')));
 }
 
