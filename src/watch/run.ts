@@ -45,6 +45,22 @@ export interface PipelineDeps {
 
 type Quote = { ara?: number; arb?: number; prev?: number };
 
+// Memoizes an async read per key, but only when it succeeds: a failed read answers `fallback` and is
+// tried again next time.
+export function memoSuccess<K, V>(load: (k: K) => Promise<V>, fallback: V): (k: K) => Promise<V> {
+  const cache = new Map<K, Promise<V>>();
+  return (k) => {
+    const hit = cache.get(k);
+    if (hit) return hit;
+    const p = load(k).catch(() => {
+      cache.delete(k);
+      return fallback;
+    });
+    cache.set(k, p);
+    return p;
+  };
+}
+
 export class Pipeline {
   readonly tape = new Tape();
   readonly books: Books;
@@ -56,7 +72,7 @@ export class Pipeline {
   private readonly scanner: Scanner;
   private readonly lastEval = new Map<string, number>();
   private readonly accumulated = new Map<string, { at: number; top: number }>();
-  private readonly quotes = new Map<string, Promise<Quote>>();
+
   private readonly prices = new Map<string, LivePrice>();
   private readonly pending = new Set<Promise<void>>();
   // Last price seen per holding, so exit levels alert on crossing, and each holding's levels for the
@@ -182,14 +198,7 @@ export class Pipeline {
     for (const s of signals) await this.emit(s, info, book, value5m);
   }
 
-  private quote(symbol: string): Promise<Quote> {
-    let q = this.quotes.get(symbol);
-    if (!q) {
-      q = getAraArb(this.d.http, symbol).catch(() => ({}));
-      this.quotes.set(symbol, q);
-    }
-    return q;
-  }
+  private readonly quote = memoSuccess<string, Quote>((symbol) => getAraArb(this.d.http, symbol), {});
 
   private async emit(sig: Signal, info: StockInfo, book: SymbolBook | undefined, value5m: number | undefined): Promise<void> {
     const cfg = this.d.cfg;

@@ -79,14 +79,22 @@ describe('Notifier gate', () => {
   }
 
   it('cooldown drops a repeat within 10 minutes but lets a 15-point jump through', async () => {
-    const { n, sent, advance } = setup();
-    expect(await n.send(alert())).toBe(true);
-    advance(60_000);
-    expect(await n.send(alert({ score: 90 }))).toBe(false);
-    expect(await n.send(alert({ score: 97 }))).toBe(true);
-    advance(601_000);
-    expect(await n.send(alert({ score: 70 }))).toBe(true);
+    const { n, sent } = setup();
+    const at = (ms: number, score: number) => alert({ score, signal: { ...alert().signal, at: AT + ms } });
+    expect(await n.send(at(0, 82))).toBe(true);
+    expect(await n.send(at(60_000, 90))).toBe(false);
+    expect(await n.send(at(60_000, 97))).toBe(true);
+    expect(await n.send(at(60_000 + 601_000, 70))).toBe(true);
     expect(sent).toHaveLength(3);
+  });
+
+  it("gates and stamps on the alert's own time (replay runs faster than the clock)", async () => {
+    const sent: string[] = [];
+    const n = new Notifier({ cfg, senders: [{ name: 't', send: async (_a, text) => { sent.push(text.telegram); } }], logger: createLogger('silent'), now: () => AT + 3_600_000 * 5 });
+    expect(await n.send(alert())).toBe(true);
+    const later = alert({ signal: { ...alert().signal, at: AT + 11 * 60_000 } });
+    expect(await n.send(later)).toBe(true);
+    expect(sent[1]!.split('\n').at(-1)).toBe('09:44:12');
   });
 
   it('a changed action passes the cooldown', async () => {

@@ -5,20 +5,33 @@ import { createGunzip, createGzip, type Gzip } from 'node:zlib';
 // Records every datafeed frame of a day so the rules can be replayed and tuned on real data.
 // File: <dir>/<date>.bin.gz, a gzip stream of [u32 BE length][f64 BE receive ms][frame bytes]. Each
 // run appends its own gzip member; gunzip reads the members back to back.
+// A disk error (full disk, bad path) stops the recording, is reported once, and never stops the bot.
 export class Recorder {
   private readonly gzip: Gzip;
   private readonly file: WriteStream;
   private readonly alertsPath: string;
+  private broken = false;
+  private closed: Promise<void>;
 
-  constructor(dir: string, date: string) {
+  constructor(dir: string, date: string, private readonly onError: (e: Error) => void = () => {}) {
     mkdirSync(dir, { recursive: true });
     this.file = createWriteStream(join(dir, `${date}.bin.gz`), { flags: 'a' });
     this.gzip = createGzip();
+    this.closed = new Promise((resolve) => this.file.once('close', () => resolve()));
+    const fail = (e: Error) => {
+      if (this.broken) return;
+      this.broken = true;
+      this.gzip.unpipe(this.file);
+      this.onError(e);
+    };
+    this.file.on('error', fail);
+    this.gzip.on('error', fail);
     this.gzip.pipe(this.file);
     this.alertsPath = join(dir, `${date}.alerts.ndjson`);
   }
 
   write(raw: Uint8Array, at: number): void {
+    if (this.broken) return;
     const head = Buffer.alloc(12);
     head.writeUInt32BE(raw.length, 0);
     head.writeDoubleBE(at, 4);
@@ -27,14 +40,20 @@ export class Recorder {
   }
 
   alert(record: object): void {
-    appendFileSync(this.alertsPath, `${JSON.stringify(record)}\n`);
+    try {
+      appendFileSync(this.alertsPath, `${JSON.stringify(record)}\n`);
+    } catch (error) {
+      this.onError(error as Error);
+    }
   }
 
   close(): Promise<void> {
-    return new Promise((resolve) => {
-      this.file.once('close', () => resolve());
-      this.gzip.end();
-    });
+    if (this.broken) {
+      this.file.destroy();
+      return Promise.resolve();
+    }
+    this.gzip.end();
+    return this.closed;
   }
 }
 

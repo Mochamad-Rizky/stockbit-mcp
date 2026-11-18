@@ -35,8 +35,9 @@ export class Notifier {
     this.now = o.now ?? Date.now;
   }
 
+  // Gated on the alert's own time, so a replay (faster than the clock) behaves like the live day.
   async send(a: Alert): Promise<boolean> {
-    const now = this.now();
+    const now = a.signal.at || this.now();
     const exit = a.signal.style === 'exit';
     const today = dayOf(now);
     if (today !== this.day) {

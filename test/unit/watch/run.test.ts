@@ -7,7 +7,7 @@ import { phaseAt, swingTimes } from '../../../src/watch/clock.js';
 import { parseWatchConfig } from '../../../src/watch/config.js';
 import { Notifier, type Sender } from '../../../src/watch/notify/notifier.js';
 import { Recorder } from '../../../src/watch/recorder.js';
-import { Pipeline, replay, WatchRunner } from '../../../src/watch/run.js';
+import { memoSuccess, Pipeline, replay, WatchRunner } from '../../../src/watch/run.js';
 import type { Alert, Channels } from '../../../src/watch/types.js';
 import { Universe } from '../../../src/watch/universe.js';
 import { fakeHttp } from './fake-http.js';
@@ -96,6 +96,21 @@ describe('replay and pipeline', () => {
     p.tick(T + 20_000);
     await p.idle();
     expect(seen.at(-1)).toEqual({ runningTradeBatch: ['*'], orderBook: ['SWEP'], livePrice: ['SWEP'] });
+  });
+});
+
+describe('memoSuccess', () => {
+  it('caches successful reads only', async () => {
+    let calls = 0;
+    const get = memoSuccess(async (k: string) => {
+      calls += 1;
+      if (calls === 1) throw new Error('timeout');
+      return `${k}!`;
+    }, 'fallback');
+    expect(await get('A')).toBe('fallback');
+    expect(await get('A')).toBe('A!');
+    expect(await get('A')).toBe('A!');
+    expect(calls).toBe(2);
   });
 });
 

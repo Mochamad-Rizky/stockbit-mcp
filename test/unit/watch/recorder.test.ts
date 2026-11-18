@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, statSync, truncateSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, statSync, truncateSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Recorder, readRecording } from '../../../src/watch/recorder.js';
@@ -47,6 +47,17 @@ describe('Recorder', () => {
     expect(got.length).toBeGreaterThan(0);
     expect(got.length).toBeLessThan(200);
     expect(got.every((r, i) => r.at === i && r.raw.every((b) => b === i))).toBe(true);
+  });
+
+  it('a disk error is reported once and does not throw', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tape-'));
+    mkdirSync(join(dir, '2026-11-18.bin.gz')); // the file path is a directory: the stream errors
+    const errors: string[] = [];
+    const rec = new Recorder(dir, '2026-11-18', (e) => errors.push(e.message));
+    rec.write(new Uint8Array([1, 2, 3]), 1);
+    await rec.close();
+    rec.write(new Uint8Array([4]), 2);
+    expect(errors).toHaveLength(1);
   });
 
   it('writes alerts as NDJSON', async () => {
