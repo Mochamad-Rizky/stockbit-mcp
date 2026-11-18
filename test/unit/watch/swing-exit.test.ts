@@ -72,7 +72,10 @@ describe('exit warnings', () => {
     // already under the stop on the previous look: no repeat
     expect(detectExit(h, t, plan, T0 + 2000, cfg, 945)).toEqual([]);
     t.add(trade('X', 1080, 10, 'buy', T0 + 3000));
-    expect(detectExit(h, t, plan, T0 + 4000, cfg, 1070).map((s) => [s.setup, s.action])).toEqual([['exit_target', 'AMANKAN']]);
+    const target = detectExit(h, t, plan, T0 + 4000, cfg, 1070);
+    expect(target.map((s) => [s.setup, s.action])).toEqual([['exit_target', 'AMANKAN']]);
+    // no holding size or average price in the alert
+    expect(target[0]!.facts.join(' ')).not.toMatch(/pegang|rata-rata|lot/);
     expect(detectExit(h, t, plan, T0 + 4000, cfg, 1078)).toEqual([]);
   });
 });

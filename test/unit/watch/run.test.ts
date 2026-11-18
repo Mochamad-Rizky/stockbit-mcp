@@ -134,7 +134,7 @@ describe('holding exits on the live path', () => {
     }
     const stops = alerts.filter((a) => a.signal.setup === 'exit_stop');
     expect(stops).toHaveLength(1);
-    expect(stops[0]!.signal.facts[1]).toBe('Harga 284 ≤ stop 284'); // avg 300 −5% = 285 → floorTick 284
+    expect(stops[0]!.signal.facts).toEqual(['Harga 284 ≤ stop 284']); // avg 300 −5% = 285 → floorTick 284
   });
 });
 

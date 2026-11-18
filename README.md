@@ -276,7 +276,6 @@ What an alert looks like (illustrative numbers):
 ```text
 🔥 [SCALP] SMRA 278 (+3,0%) — HAKA sapu offer
 AKSI: BELI 276–278 · SL 270 (−2,9%) · TP1 290 · TP2 298 · R:R 1:1,5
-Lot: 150 (risiko 1% = Rp120rb dari saldo trading)
 • 5 menit: Rp2,1 M (RVOL 6,2x), HAKA 91%
 • Sapu 3 level offer 274→280, lot terbesar 3.000
 • Bid tebal di 272: 50.000 lot, bertahan 1 menit
@@ -290,15 +289,16 @@ The levels in an alert:
 - **Stop:** under the nearest structure that leaves room, meaning a holding bid wall, the day's low
   or VWAP (for swing: the 10-day low or the 20-day average).
 - **Targets:** 1.5R and 2.5R, the first capped at a persisting offer wall.
-- **Lots:** risk 1% of your cash trading balance per trade (never margin), capped by your balance
-  and by 5% of the stock's last-5-minute value.
+- **No portfolio in alerts:** notifications show the signal only, never your holdings, balance or a
+  lot size. (Lot sizes are still worked out internally, from 1% risk of the cash trading balance, to
+  turn a buy with no room to its target into TUNGGU.)
 - **Price grid:** every price is on the IDX tick grid and inside ARB–ARA.
 
 Setup:
 
 ```bash
 stockbit-mcp login                 # once
-stockbit-mcp login --trading       # every morning, for holdings, balance and lot sizes
+stockbit-mcp login --trading       # every morning, for exit warnings on what you hold
 stockbit-mcp watch --setup-telegram  # optional: make a bot with @BotFather, send it /start, paste its token
 stockbit-mcp watch --dry-run       # try it: alerts are printed, nothing is sent
 stockbit-mcp watch                 # alerts to macOS notifications and Telegram

@@ -1,10 +1,10 @@
-import { dec1, idNum, rupiahShort, signedPct } from '../fmt.js';
+import { dec1, idNum, signedPct } from '../fmt.js';
 import type { Alert, Style } from '../types.js';
 
-// Alert text: the full message for Telegram and a short one for the macOS notification.
+// Alert text: the full message for Telegram and a short one for the macOS notification. Only the
+// signal is shown: no holdings, balance or lot size.
 
 const EMOJI: Record<Style, string> = { scalp: '🔥', day: '⚡', swing: '📈', exit: '🚨' };
-const PCT = new Intl.NumberFormat('id-ID', { maximumFractionDigits: 2 });
 const JAKARTA_MS = 7 * 3_600_000;
 
 const signed = (n: number) => `${n >= 0 ? '+' : '−'}${Math.abs(n)}`;
@@ -18,12 +18,14 @@ function actionLine(a: Alert): string {
   return `AKSI: ${head} · ${sl} · TP1 ${idNum(p.tp1)} · TP2 ${idNum(p.tp2)} · R:R 1:${dec1(p.rr)}`;
 }
 
-function lotLine(a: Alert): string | undefined {
-  const p = a.plan;
-  if (!p || a.signal.action === 'HINDARI' || a.signal.style === 'exit') return undefined;
-  if (p.note) return `Lot: ${idNum(p.lots)} (${p.note})`;
-  const basis = p.lotBasis === 'balance' ? 'saldo trading' : 'modal tetap';
-  return `Lot: ${idNum(p.lots)} (risiko ${PCT.format(p.riskPct * 100)}% = ${rupiahShort(p.riskIdr)} dari ${basis})`;
+// Plan notes about the signal (no room to the target, stop too close) are shown; notes about the
+// lot size are not: notifications carry no portfolio, balance or position size.
+const LOT_NOTES = new Set(['Risiko per trade terlalu kecil untuk 1 lot']);
+
+function noteLine(a: Alert): string | undefined {
+  const note = a.plan?.note;
+  if (!note || LOT_NOTES.has(note) || a.signal.action === 'HINDARI' || a.signal.style === 'exit') return undefined;
+  return `Catatan: ${note}`;
 }
 
 export function formatTelegram(a: Alert, at: number): string {
@@ -32,8 +34,8 @@ export function formatTelegram(a: Alert, at: number): string {
     `${EMOJI[s.style]} [${s.style.toUpperCase()}] ${s.symbol} ${idNum(a.price.last)} (${signedPct(a.price.changePct)}) — ${s.title}`,
     actionLine(a),
   ];
-  const lot = lotLine(a);
-  if (lot) lines.push(lot);
+  const note = noteLine(a);
+  if (note) lines.push(note);
   for (const f of s.facts) lines.push(`• ${f}`);
   if (s.style !== 'exit') {
     lines.push(`Skor ${a.score}/100: ${s.components.map((c) => `${c.label} ${signed(c.points)}`).join(' · ')}`);

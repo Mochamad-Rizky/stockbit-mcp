@@ -30,7 +30,6 @@ describe('alert text', () => {
       [
         '🔥 [SCALP] SMRA 274 (+3,8%) — HAKA sapu offer',
         'AKSI: BELI 272–274 · SL 266 (−2,9%) · TP1 286 · TP2 294 · R:R 1:1,5',
-        'Lot: 150 (risiko 1% = Rp120rb dari saldo trading)',
         '• 5 menit: Rp2,1 M (RVOL 6,2x), HAKA 91%',
         '• Sapu 3 level offer 274→276, lot terbesar 8.140',
         'Skor 82/100: RVOL +25 · HAKA +20 · sapu +20 · bid +12 · ARA +5',
@@ -48,7 +47,7 @@ describe('alert text', () => {
     const lines = formatTelegram(wait, AT).split('\n');
     expect(lines[0]).toBe('⚡ [DAY] SMRA 274 (+3,8%) — Akumulasi');
     expect(lines[1]).toBe('AKSI: TUNGGU di 496 · SL 488 (−1,6%) · TP1 510 · TP2 520 · R:R 1:1,8');
-    expect(lines[2]).toBe('Lot: 150 (risiko 1% = Rp120rb dari modal tetap)');
+    expect(lines[2]).toBe('• 5 menit: Rp2,1 M (RVOL 6,2x), HAKA 91%');
     expect(lines.at(-2)).toBe('⚠️ Notasi: E, X · UMA: ya · ke ARA: ? · Sinyal aturan, bukan saran.');
 
     const avoid = formatTelegram(alert({ signal: { ...alert().signal, style: 'day', action: 'HINDARI', title: 'Distribusi' } }), AT).split('\n');
@@ -63,9 +62,14 @@ describe('alert text', () => {
     expect(exit.some((l) => l.startsWith('Skor'))).toBe(false);
   });
 
-  it('prints a plan note instead of lots', () => {
+  it('shows no portfolio, balance or lot size', () => {
     const t = formatTelegram(alert({ plan: { ...alert().plan!, lots: 0, note: 'Risiko per trade terlalu kecil untuk 1 lot' } }), AT);
-    expect(t).toContain('Lot: 0 (Risiko per trade terlalu kecil untuk 1 lot)');
+    for (const word of ['Lot:', 'lot (', 'saldo', 'modal', 'risiko', 'Rp120rb', 'Risiko per trade']) expect(t).not.toContain(word);
+  });
+
+  it('keeps a plan note that is about the signal', () => {
+    const t = formatTelegram(alert({ plan: { ...alert().plan!, action: 'TUNGGU', waitPrice: 274, note: 'Ruang naik ke target terlalu sempit (ARA atau tembok offer); jangan kejar' } }), AT);
+    expect(t).toContain('Catatan: Ruang naik ke target terlalu sempit (ARA atau tembok offer); jangan kejar');
   });
 });
 

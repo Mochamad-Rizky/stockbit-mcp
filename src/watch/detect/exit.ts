@@ -40,20 +40,19 @@ export function detectExit(
 ): Signal[] {
   const last = tape.day().last;
   if (!last) return [];
-  const held = `Kamu pegang ${idNum(h.lots)} lot, rata-rata ${idNum(h.avgPrice)}`;
   const refs: PlanRefs = { last, dayLow: tape.day().low };
   const base = { style: 'exit' as const, symbol: h.symbol, components: [], at: now, refs };
   const out: Signal[] = [];
   if (prevLast !== undefined && prevLast > plan.stop && last <= plan.stop) {
-    out.push({ ...base, setup: 'exit_stop', title: 'Tembus stop', action: 'JUAL', facts: [held, `Harga ${idNum(last)} ≤ stop ${idNum(plan.stop)}`] });
+    out.push({ ...base, setup: 'exit_stop', title: 'Tembus stop', action: 'JUAL', facts: [`Harga ${idNum(last)} ≤ stop ${idNum(plan.stop)}`] });
   } else if (prevLast !== undefined && prevLast < plan.tp1 && last >= plan.tp1) {
     out.push({
       ...base, setup: 'exit_target', title: 'Target tercapai', action: 'AMANKAN',
-      facts: [held, `Harga ${idNum(last)} ≥ TP1 ${idNum(plan.tp1)} (TP2 ${idNum(plan.tp2)})`],
+      facts: [`Harga ${idNum(last)} ≥ TP1 ${idNum(plan.tp1)} (TP2 ${idNum(plan.tp2)})`],
     });
   }
   if (isDistribution(tape, now, cfg)) {
-    out.push({ ...base, setup: 'exit_distribution', title: 'Distribusi di saham kamu', action: 'AMANKAN', facts: [held, 'HAKI lot besar mendominasi 15 menit terakhir'] });
+    out.push({ ...base, setup: 'exit_distribution', title: 'Distribusi di saham kamu', action: 'AMANKAN', facts: ['HAKI besar mendominasi 15 menit terakhir'] });
   }
   return out;
 }
