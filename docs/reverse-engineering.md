@@ -45,6 +45,37 @@ author's own session.
     amend/cancel are order writes.
   - The AI screener (`POST /screener/rules/generate {prompt}`) writes to the server.
 
+## Realtime datafeed (used by `stockbit-mcp watch`)
+
+Read from the 2.9.0 bundle (`usePrimus-*.js`, protobuf-es `proto3.makeMessageType` definitions) and
+checked live on 2026-11-18 with the author's session.
+
+- URL `wss://wss-jkt.trading.stockbit.com/ws?_s=dfctx_v2_<n>` (n = the app's reconnect counter),
+  WebSocket subprotocol `desktop`, binary frames. Plain Node's `WebSocket` connects: unlike exodus
+  REST, the datafeed is not behind Cloudflare's browser check.
+- Client → server: `securities.transactional.datafeed.v1.WebsocketRequest{1 user_id, 2 channel,
+  3 key, 4 ping, 5 access_token}`. The app subscribes with `{user_id, channel, access_token}` (the
+  exodus access token), sends the whole channel set again whenever it changes, and pings
+  `{4 {1 "ping"}}` every 15 s (answered `ping{"pong"}`; no answer within 3 s → reconnect).
+- `WebsocketChannel` (repeated strings unless noted): watchlist 1, order_book 2, running_trade 3,
+  is_hotlist 4 (bool), running_trade_batch 5, liveprice 6, iepiev 7, intraday 8, best_bid_offer 9,
+  market_mover 10 (message), order_queue 11 (message), liveprice_v3 12, order_book_v3 13,
+  intraday_v3 14, tradebook 15 (message), fitem 16 (message), market_mover_catalog 17. `"*"` in
+  running_trade_batch streams the whole market: about 94 trades/s and 8 KB/s mid-morning.
+- Server → client: `WebsocketWrapMessageChannel`, a oneof: running_trade 1, ping 2, top20 3,
+  watchlist 4, orderbook_header 5, orderbook_body 6, error 7 (`{1 code 400|401, 2 message}`),
+  running_trade_batch 8, liveprice 9, orderbook 10, iepiev 11, intraday 12, best_bid_offer 13,
+  market_mover_batch 14, order_queue 15, liveprice_v3 16, orderbook_v3 17, intraday_v3 18,
+  tradebook 19, fitem 20, market_mover_catalog 21, tradebook_book 22.
+- `RunningTrade`: stock 2, price 3 (double), volume 4 (double, **shares**), action 5 (1 buy-initiated =
+  HAKA, 2 sell-initiated = HAKI), time 7 (Timestamp), trade_number 9, market_board 10, value 11. No
+  broker code. Checked: 300 shares × 5 675 = value 1 702 500.
+- `orderbook` (10) carries `{1 stock_code, 2 body}` where body is text, one side per message:
+  `#O|BBRI|BID|3120;179;2245700|3110;444;3551900|…|1794969627-5368&49457200` (price; number of
+  orders; shares … then epoch seconds-n & total shares). Full depth (24 levels seen). In a 20 s test
+  `order_book_v3` and `best_bid_offer` sent nothing for the symbols tried.
+- `liveprice_v3` (16): numbers as `financial.common.v1.DecimalValue{1 raw{1 value string}, 2 formatted}`.
+
 ## Protocol facts the server relies on
 
 - Headers: `Authorization: Bearer <token>`, `X-Platform: desktop`, `X-AppVersion: 2.9.0` (2.7.4

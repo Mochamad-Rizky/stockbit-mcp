@@ -245,6 +245,82 @@ Other things worth knowing:
 | `STOCKBIT_MCP_BROWSER_IDLE_MS` | `2000` | Chromium closes this many ms after the last request (`0`: right away) |
 | `STOCKBIT_MCP_BROWSER_HEADLESS` | `false` | `true` hides the window, but Cloudflare blocks headless Chromium |
 
+## Watch bot
+
+`stockbit-mcp watch` is a separate command that runs on your Mac during market hours. It watches the
+whole IDX market on Stockbit's realtime feed and sends you alerts for scalping, day-trading and
+swing setups, plus warnings on stocks you hold. It never places orders.
+
+> **Rules, not advice.** Every alert comes from explicit rules (HAKA/HAKI share, RVOL, swept offers,
+> bid and offer walls, broker accumulation …) with its score broken down. Tune them on your own
+> recordings before trusting them, and decide every trade yourself.
+
+How it works:
+
+- The running trade of every stock (`*` on the datafeed) feeds per-stock windows: value against the
+  20-day average (RVOL), HAKA vs HAKI, big lots, range.
+- Every 30 s it keeps two short lists: the top 5 by momentum and the top 5 by quiet accumulation.
+  Those, plus your holdings, get the live order book, which shows walls, fake walls and thinning
+  offers.
+- Detectors fire on setups:
+  - scalping: HAKA sweep, offer thinning, big-lot burst;
+  - day trading: RVOL spike, day-high break, accumulation, markup, distribution;
+  - swing: bandar accumulation from daily bars, the broker summary and foreign flow, at the lunch
+    break, 15:00 and 16:10;
+  - exits on what you hold: stop broken, first target reached, distribution.
+- An alert goes out only above the style's score threshold, at most once per stock and style per 10
+  minutes, and at most 30 a day.
+
+What an alert looks like (illustrative numbers):
+
+```text
+🔥 [SCALP] SMRA 278 (+3,0%) — HAKA sapu offer
+AKSI: BELI 276–278 · SL 270 (−2,9%) · TP1 290 · TP2 298 · R:R 1:1,5
+Lot: 150 (risiko 1% = Rp120rb dari saldo trading)
+• 5 menit: Rp2,1 M (RVOL 6,2x), HAKA 91%
+• Sapu 3 level offer 274→280, lot terbesar 3.000
+• Bid tebal di 272: 50.000 lot, bertahan 1 menit
+Skor 87/100: RVOL +25 · HAKA +20 · sapu +20 · bid +12 · offer tipis +10
+⚠️ Notasi: – · UMA: tidak · ke ARA: +20% · Sinyal aturan, bukan saran.
+09:33:12
+```
+
+The levels in an alert:
+
+- **Stop:** under the nearest structure that leaves room, meaning a holding bid wall, the day's low
+  or VWAP (for swing: the 10-day low or the 20-day average).
+- **Targets:** 1.5R and 2.5R, the first capped at a persisting offer wall.
+- **Lots:** risk 1% of your cash trading balance per trade (never margin), capped by your balance
+  and by 5% of the stock's last-5-minute value.
+- **Price grid:** every price is on the IDX tick grid and inside ARB–ARA.
+
+Setup:
+
+```bash
+stockbit-mcp login                 # once
+stockbit-mcp login --trading       # every morning, for holdings, balance and lot sizes
+stockbit-mcp watch --setup-telegram  # optional: make a bot with @BotFather, send it /start, paste its token
+stockbit-mcp watch --dry-run       # try it: alerts are printed, nothing is sent
+stockbit-mcp watch                 # alerts to macOS notifications and Telegram
+stockbit-mcp watch --install       # optional: start it every weekday at 08:40 (LaunchAgent)
+```
+
+The feed connects from Node directly (Stockbit's datafeed is not behind the browser check);
+Chromium is used only for the few REST reads (company list, ARA/ARB, broker summary, portfolio).
+Every feed frame is recorded to `~/.stockbit-mcp/tape/YYYY-MM-DD.bin.gz` and every alert to
+`…alerts.ndjson`; `stockbit-mcp watch --replay <file>` runs a recorded day through the rules again.
+
+Settings live in `~/.stockbit-mcp/watch.json`. Every key has a default, so the file only needs what
+you change, for example:
+
+```json
+{ "risk": { "pct": { "scalp": 0.005 } }, "alerts": { "dailyCap": 15 }, "thresholds": { "day": 70 } }
+```
+
+The keys are `telegram`, `macos`, `styles` (turn scalp/day/swing/exit on or off), `risk`, `alerts`,
+`thresholds`, `scanner`, `scalp`, `day`, `book` and `swing`. Their defaults are in
+`src/watch/config.ts`.
+
 ## Errors
 
 Every result is `{ ok, data | error, meta }`. Error codes: `AUTH_REQUIRED` / `TRADING_AUTH_REQUIRED`
