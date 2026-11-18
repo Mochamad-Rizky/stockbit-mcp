@@ -76,7 +76,10 @@ export async function watchCommand(args: string[], d: WatchCommandDeps): Promise
 
   if (flags.has('--setup-telegram')) {
     const token = await askSecret('Token bot Telegram dari @BotFather: ');
-    const chatId = await setupTelegram(token);
+    const chatId = await setupTelegram(token, fetch, {
+      onWaiting: (username) =>
+        process.stderr.write(`Buka https://t.me/${username} lalu tekan Start (atau kirim /start). Menunggu sampai 2,5 menit…\n`),
+    });
     await saveWatchConfig(d.config.home, { ...cfg, telegram: { token, chatId } });
     await telegramSender(token, chatId).text?.('stockbit-mcp watch tersambung ke Telegram ✅');
     process.stderr.write(`Telegram tersambung (chat ${chatId}); pesan tes terkirim.\n`);

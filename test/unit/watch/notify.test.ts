@@ -151,12 +151,49 @@ describe('senders', () => {
     await expect(telegramSender('T', '1', bad).send(alert(), { telegram: 'x', macos: { title: '', body: '' } })).rejects.toThrow(/Unauthorized/);
   });
 
+  // Telegram API fake: answers by method name; getUpdates answers come from a queue.
+  function tg(opts: { username?: string; webhook?: string; updates: unknown[][] }) {
+    const calls: string[] = [];
+    const f = (async (url: string | URL | Request) => {
+      const u = new URL(String(url));
+      const method = u.pathname.split('/').pop()!;
+      calls.push(`${method}${u.search}`);
+      if (method === 'getMe') return new Response(JSON.stringify({ ok: true, result: { username: opts.username ?? 'xbot' } }));
+      if (method === 'getWebhookInfo') return new Response(JSON.stringify({ ok: true, result: { url: opts.webhook ?? '' } }));
+      return new Response(JSON.stringify({ ok: true, result: opts.updates.shift() ?? [] }));
+    }) as unknown as typeof fetch;
+    return { f, calls };
+  }
+
   it('setupTelegram picks the latest chat id', async () => {
-    const f = (async () => new Response(JSON.stringify({ ok: true, result: [
+    const { f } = tg({ updates: [[
       { update_id: 1, message: { chat: { id: 111 } } }, { update_id: 3, message: { chat: { id: 333 } } }, { update_id: 2, message: { chat: { id: 222 } } },
-    ] }))) as unknown as typeof fetch;
+    ]] });
     expect(await setupTelegram('T', f)).toBe('333');
-    const none = (async () => new Response(JSON.stringify({ ok: true, result: [] }))) as unknown as typeof fetch;
-    await expect(setupTelegram('T', none)).rejects.toThrow('Kirim /start ke bot kamu dulu, lalu ulangi.');
+  });
+
+  it('accepts a chat from a Start-button update that is not a message', async () => {
+    const { f } = tg({ updates: [[{ update_id: 5, my_chat_member: { chat: { id: 555 } } }]] });
+    expect(await setupTelegram('T', f)).toBe('555');
+  });
+
+  it('names the bot and waits for /start when nothing has arrived yet', async () => {
+    const { f, calls } = tg({ username: 'rizky_alert_bot', updates: [[], [], [{ update_id: 9, message: { chat: { id: 42 } } }]] });
+    const waiting: string[] = [];
+    expect(await setupTelegram('T', f, { onWaiting: (u) => waiting.push(u), rounds: 3 })).toBe('42');
+    expect(waiting).toEqual(['rizky_alert_bot']);
+    expect(calls.filter((c) => c.startsWith('getUpdates?timeout='))).toHaveLength(2);
+  });
+
+  it('says which bot to open when nothing arrives', async () => {
+    const { f } = tg({ username: 'rizky_alert_bot', updates: [] });
+    await expect(setupTelegram('T', f, { rounds: 2 })).rejects.toThrow(
+      'Belum ada pesan ke @rizky_alert_bot. Buka https://t.me/rizky_alert_bot, tekan Start (atau kirim /start) di chat bot itu — bukan di @BotFather — lalu ulangi.',
+    );
+  });
+
+  it('explains a webhook instead of waiting', async () => {
+    const { f } = tg({ webhook: 'https://example.com/hook', updates: [] });
+    await expect(setupTelegram('T', f)).rejects.toThrow(/webhook/);
   });
 });
