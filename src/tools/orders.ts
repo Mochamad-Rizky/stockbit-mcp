@@ -1,6 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { buildRequest, endpoint } from '../catalog/index.js';
+import { nearestTicks, onTick, tickSize } from '../core/ticks.js';
+export { nearestTicks, onTick };
 import type { PopupStep } from '../core/confirm.js';
 import { isStockbitMcpError, StockbitMcpError } from '../core/errors.js';
 import { isJsonObject, type JsonObject, type JsonValue } from '../core/json.js';
@@ -22,36 +24,6 @@ const LOT_SIZE = 100;
 // should not hide.
 const MAX_LOT = 50_000;
 const MAX_PRICE = 9_999_999;
-
-// IDX price fractions (fraksi harga), as the app's fractionList has them.
-const TICKS = [
-  { max: 200, step: 1 },
-  { max: 500, step: 2 },
-  { max: 2000, step: 5 },
-  { max: 5000, step: 10 },
-  { max: Infinity, step: 25 },
-] as const;
-
-function stepAbove(price: number): number {
-  return TICKS.find((t) => price < t.max)?.step ?? 25;
-}
-
-function stepBelow(price: number): number {
-  return TICKS.find((t) => price <= t.max)?.step ?? 25;
-}
-
-// A price is on the grid when it is a multiple of the step above it and of the step below it: from
-// 200 the price steps up by 2 but down by 1, so 200 is valid and 201 is not.
-export function onTick(price: number): boolean {
-  return price % stepAbove(price) === 0 && price % stepBelow(price) === 0;
-}
-
-// The valid prices just below and above an off-grid price, for the error hint.
-export function nearestTicks(price: number): [number, number] {
-  const step = stepAbove(price);
-  const lower = price - (price % step);
-  return [lower, lower + step];
-}
 
 const IDR = new Intl.NumberFormat('id-ID');
 const rp = (n: number) => `Rp ${IDR.format(Math.round(n))}`;
@@ -191,7 +163,7 @@ async function preTrade(
   if (!/^etf$/i.test(type) && !onTick(price)) {
     const [lower, upper] = nearestTicks(price);
     refuse(
-      `${price} is not a valid IDX price: at this level prices move in steps of ${stepAbove(price)}.`,
+      `${price} is not a valid IDX price: at this level prices move in steps of ${tickSize(price)}.`,
       `Use ${lower} or ${upper}.`,
     );
   }
