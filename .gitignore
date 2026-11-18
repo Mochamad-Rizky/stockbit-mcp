@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+.vitest/
+.superpowers/
+.env
+.env.local
+*.log
+.DS_Store
+# Captures and fixtures recorded from a real account hold personal data.
+*.har
+test/fixtures/private/

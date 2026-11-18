@@ -1,0 +1,10 @@
+# pnpm blocks dependency build scripts until they are reviewed. esbuild (used by tsup) only runs a
+# postinstall that validates and speeds up its prebuilt platform binary.
+allowBuilds:
+  esbuild: true
+
+# @types/node follows the published runtime floor (Node 20.19). Vitest 5 lists only
+# @types/node ^22 || >=24 as its optional peer, which would print a peer warning on every install.
+peerDependencyRules:
+  allowedVersions:
+    'vitest>@types/node': '20'

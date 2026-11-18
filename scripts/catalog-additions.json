@@ -1,0 +1,275 @@
+[
+ {
+  "id": "list_classifications",
+  "method": "GET",
+  "host": "exodus",
+  "path": "/emitten/classification/list",
+  "group": "emitten",
+  "documented": true,
+  "destructive": false,
+  "pathParams": [],
+  "query": [],
+  "feature": "2.9.0 Market sector browser: the whole classification tree (Sektor > Sub-sektor > Industri > Sub-industri). Checked live 2026-11-18.",
+  "response": "data[{id, name, level (1-4), parent_id, symbol (English sector label on level 1, e.g. 'Non-Cyclical'), children[{id, name, level, parent_id, symbol, children[…]}]}]",
+  "seenInHar": false
+ },
+ {
+  "id": "get_classification",
+  "method": "GET",
+  "host": "exodus",
+  "path": "/emitten/classification",
+  "group": "emitten",
+  "documented": true,
+  "destructive": false,
+  "pathParams": [],
+  "query": [
+   {
+    "name": "id",
+    "type": "integer",
+    "required": true,
+    "description": "Classification node id, from list_classifications."
+   }
+  ],
+  "feature": "2.9.0 Market sector browser: one node and its direct children. Checked live 2026-11-18.",
+  "response": "{name, symbol, level, parent_id, total_company, data[{id, name, level, parent_id, symbol, total_company}]} (the node's own fields sit beside data, not inside it)",
+  "seenInHar": false
+ },
+ {
+  "id": "list_classification_companies",
+  "method": "GET",
+  "host": "exodus",
+  "path": "/emitten/classification/company",
+  "group": "emitten",
+  "documented": true,
+  "destructive": false,
+  "pathParams": [],
+  "query": [
+   {
+    "name": "ids",
+    "type": "string[]",
+    "required": true,
+    "description": "Classification node ids (any level); several ids give one group each."
+   },
+   {
+    "name": "sort_order",
+    "type": "enum",
+    "required": false,
+    "enum": [
+     "SORT_ORDER_TOP_GAINER",
+     "SORT_ORDER_TOP_LOSER",
+     "SORT_ORDER_HIGHEST_PRICE",
+     "SORT_ORDER_LOWEST_PRICE",
+     "SORT_ORDER_HIGHEST_MARKET_CAP",
+     "SORT_ORDER_TOP_LIQUIDITY"
+    ],
+    "description": "Order of the companies. TOP_LIQUIDITY sorts by valuema20 (20-day average traded value)."
+   },
+   {
+    "name": "parent_id",
+    "type": "integer",
+    "required": false,
+    "description": "Parent node id, sent by the app's sector widget."
+   }
+  ],
+  "feature": "2.9.0 Market sector browser and sector widget: the companies under classification nodes. Checked live 2026-11-18.",
+  "response": "data[{id, level, companies[{symbol, name, company_id, last, change, percent, marketcap, valuema20, avgvolume, volume, value, followers, type_company, tradeable, company_status, notations[], uma, day_trade_info, margin_info, trading_limit_info, icon_url}], pagination{total_data}}]",
+  "seenInHar": false
+ },
+ {
+  "id": "get_investor_ubo",
+  "method": "GET",
+  "host": "exodus",
+  "path": "/insider/ubo",
+  "group": "insider",
+  "documented": true,
+  "destructive": false,
+  "pathParams": [],
+  "query": [
+   {
+    "name": "investor_id",
+    "type": "string",
+    "required": true,
+    "description": "Investor id (holders[].investor.id from ownership_shareholders_monthly, or search/v2 insiders[].id)."
+   },
+   {
+    "name": "report_date",
+    "type": "string",
+    "required": false,
+    "description": "YYYY-MM-DD end-of-month; omit for the latest."
+   }
+  ],
+  "feature": "2.9.0 Investor Network panel: what one investor ultimately owns, directly and through holding companies. Checked live 2026-11-18.",
+  "response": "data{id, name, type{raw}, classification{raw ('Individual'|'Corporate')}, location, nationality, domicile, report_date, first_available_date, last_available_date, grand_total{percentage, total_shares, value, change}, holdings[{company{id, symbol, name}, shareholding{total_shares, percentage, value, price, subholdings[]}, previous_shareholding, change}]}. Corporate investors often answer empty holdings.",
+  "seenInHar": false
+ },
+ {
+  "id": "get_market_mover_catalog",
+  "method": "GET",
+  "host": "exodus",
+  "path": "/order-trade/market-mover/catalog",
+  "group": "market",
+  "documented": true,
+  "destructive": false,
+  "pathParams": [],
+  "query": [
+   {
+    "name": "catalog_codes",
+    "type": "string",
+    "required": false,
+    "default": "IHSG",
+    "description": "Catalog code. The app sends only IHSG; LQ45 and IDX30 answered 'Catalog not found' (2026-11-18)."
+   },
+   {
+    "name": "date",
+    "type": "string",
+    "required": false,
+    "description": "YYYY-MM-DD trading day; omit for live. Live counts are 0 outside trading hours."
+   }
+  ],
+  "feature": "2.9.0 Market overview breadth bar (advancers, decliners, unchanged). Checked live 2026-11-18.",
+  "response": "data{catalog_list[{catalog_detail{code, type ('CATALOG_TYPE_INDEX')}, price{up_count, down_count, unchanged_count}, total_stock}]}",
+  "seenInHar": false
+ },
+ {
+  "id": "list_orderbook_companies",
+  "method": "GET",
+  "host": "exodus",
+  "path": "/orderbook/companies",
+  "group": "trading",
+  "documented": true,
+  "destructive": false,
+  "pathParams": [],
+  "query": [
+   {
+    "name": "symbols",
+    "type": "string[]",
+    "required": true,
+    "description": "IDX tickers; the app asks for at most 100 per call."
+   }
+  ],
+  "feature": "2.9.0 Watchlist and portfolio rows: quote snapshot of many symbols at once. Checked live 2026-11-18.",
+  "response": "data[{symbol, name, lastprice, previous, open, high, low, close, change, percentage_change, volume, value, frequency, average, fbuy, fsell, fnet, net_foreign, foreign, domestic, status, tradeable, notation[], uma, corp_action, ara, arb, iepiev, company_type}]",
+  "seenInHar": false
+ },
+ {
+  "id": "get_latest_prices_v3",
+  "method": "GET",
+  "host": "exodus",
+  "path": "/company-price-feed/v3/prices/latest",
+  "group": "trading",
+  "documented": true,
+  "destructive": false,
+  "pathParams": [],
+  "query": [
+   {
+    "name": "symbol",
+    "type": "string[]",
+    "required": true,
+    "description": "IDX tickers."
+   }
+  ],
+  "feature": "Financial module 1.2.3+ price header. Checked live 2026-11-18.",
+  "response": "data[{symbol, company_id, datetime, open, high, low, lastprice, previous, change, percentage_change, value, volume, average, frequency}], each number as {raw{value (string)}, formatted}",
+  "seenInHar": false
+ },
+ {
+  "id": "list_saved_screeners_v2",
+  "method": "GET",
+  "host": "exodus",
+  "path": "/screener/v2/templates",
+  "group": "screener",
+  "documented": true,
+  "destructive": false,
+  "pathParams": [],
+  "query": [
+   { "name": "page", "type": "integer", "required": false, "default": 1, "description": "Page, from 1." },
+   {
+    "name": "limit",
+    "type": "integer",
+    "required": false,
+    "default": 25,
+    "description": "Page size (the app uses 25). With with_summary=true Stockbit pages by 10 whatever the limit."
+   },
+   { "name": "with_summary", "type": "boolean", "required": false, "description": "Include each screener's rules." },
+   { "name": "search", "type": "string", "required": false, "description": "Filter by name." },
+   {
+    "name": "sort_by",
+    "type": "enum",
+    "required": false,
+    "enum": ["LIST_REQUEST_SORT_BY_RECENTLY_ADDED", "LIST_REQUEST_SORT_BY_NAME"],
+    "description": "Sort key."
+   },
+   {
+    "name": "order_type",
+    "type": "enum",
+    "required": false,
+    "enum": ["ORDER_TYPE_ASC", "ORDER_TYPE_DESC"],
+    "description": "Sort direction."
+   }
+  ],
+  "feature": "2.9.0 Screener v2 'Saved' list. Checked live 2026-11-18.",
+  "response": "data{items[{id, name, type, favorite, summary{rules[], metrics_count, companies_count, updated_at}}], pagination{current_page, next_page, total_page, total_data}}",
+  "seenInHar": false
+ },
+ {
+  "id": "list_favorite_screeners_v2",
+  "method": "GET",
+  "host": "exodus",
+  "path": "/screener/v2/favorites",
+  "group": "screener",
+  "documented": true,
+  "destructive": false,
+  "pathParams": [],
+  "query": [
+   { "name": "page", "type": "integer", "required": false, "default": 1, "description": "Page, from 1." },
+   {
+    "name": "limit",
+    "type": "integer",
+    "required": false,
+    "default": 25,
+    "description": "Page size (the app uses 25). With with_summary=true Stockbit pages by 10 whatever the limit."
+   },
+   { "name": "with_summary", "type": "boolean", "required": false, "description": "Include each screener's rules." },
+   { "name": "search", "type": "string", "required": false, "description": "Filter by name." },
+   {
+    "name": "sort_by",
+    "type": "enum",
+    "required": false,
+    "enum": ["LIST_REQUEST_SORT_BY_RECENTLY_ADDED", "LIST_REQUEST_SORT_BY_NAME"],
+    "description": "Sort key."
+   },
+   {
+    "name": "order_type",
+    "type": "enum",
+    "required": false,
+    "enum": ["ORDER_TYPE_ASC", "ORDER_TYPE_DESC"],
+    "description": "Sort direction."
+   }
+  ],
+  "feature": "2.9.0 Screener v2 'Favorites' list. Checked live 2026-11-18.",
+  "response": "data{items[{id, name, type, order, added_at, summary{rules[], metrics_count, companies_count, updated_at}}], pagination{current_page, next_page, total_page, total_data}}",
+  "seenInHar": false
+ },
+ {
+  "id": "list_recent_searches_v2",
+  "method": "GET",
+  "host": "exodus",
+  "path": "/search/v2/recent",
+  "group": "search",
+  "documented": true,
+  "destructive": false,
+  "pathParams": [],
+  "query": [
+   {
+    "name": "placement",
+    "type": "enum",
+    "required": true,
+    "enum": ["PLACEMENT_PRICE_ALERT"],
+    "description": "Where the search box sits; the app uses only PLACEMENT_PRICE_ALERT. Without it Stockbit answers 'Invalid request'."
+   }
+  ],
+  "feature": "2.9.0 Price alert symbol search: recent searches. Checked live 2026-11-18.",
+  "response": "data{recent_searches[]}",
+  "seenInHar": false
+ }
+]
