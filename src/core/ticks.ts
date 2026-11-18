@@ -63,3 +63,12 @@ export function tickDown(price: number, n = 1): number {
   for (let i = 0; i < n; i += 1) p = onTick(p) ? Math.max(1, p - stepBelow(p)) : floorTick(p);
   return p;
 }
+
+// Signed number of grid steps from `from` to `to` (both snapped to the grid first).
+export function tickDistance(from: number, to: number): number {
+  const a = floorTick(Math.min(from, to));
+  const b = floorTick(Math.max(from, to));
+  let n = 0;
+  for (let p = a; p < b && n < 100_000; p = tickUp(p)) n += 1;
+  return from <= to ? n : -n;
+}

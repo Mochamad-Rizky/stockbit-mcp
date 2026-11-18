@@ -81,6 +81,7 @@ export class SymbolTape {
   private readonly lots: number[] = [];
   private bigThreshold = Infinity;
   lastTime = 0;
+  firstTime = 0;
 
   add(t: Trade): void {
     const lot = t.shares / 100;
@@ -89,7 +90,10 @@ export class SymbolTape {
       this.bigThreshold = this.lotPercentile(BIG_LOT_PCT);
     }
     const big = lot >= this.bigThreshold;
-    if (this.dayStats.trades === 0) this.open = t.price;
+    if (this.dayStats.trades === 0) {
+      this.open = t.price;
+      this.firstTime = t.time;
+    }
     addTo(this.dayStats, t, lot, big);
     this.shares += t.shares;
     const sec = Math.floor(t.time / 1000);
