@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, statSync, truncateSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, statSync, truncateSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Recorder, readRecording } from '../../../src/watch/recorder.js';
@@ -47,6 +47,18 @@ describe('Recorder', () => {
     expect(got.length).toBeGreaterThan(0);
     expect(got.length).toBeLessThan(200);
     expect(got.every((r, i) => r.at === i && r.raw.every((b) => b === i))).toBe(true);
+  });
+
+  it('reads a corrupt or still-being-written tail up to the last complete record', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tape-'));
+    const rec = new Recorder(dir, '2026-11-18');
+    for (let i = 0; i < 50; i += 1) rec.write(new Uint8Array(300).fill(i), i);
+    await rec.close();
+    const file = join(dir, '2026-11-18.bin.gz');
+    // a second run's gzip member cut mid-block: header ok, deflate data garbage
+    appendFileSync(file, Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0, 0, 0, 0, 0x00, 0x03, 0x00, 0x05, 0x00, 0xff, 0xff, 0x13]));
+    const got = await collect(file);
+    expect(got).toHaveLength(50);
   });
 
   it('a disk error is reported once and does not throw', async () => {

@@ -57,8 +57,8 @@ export class Recorder {
   }
 }
 
-// Reads a recording back in order. A file cut off mid-way (a crash, a full disk) yields the complete
-// records before the cut and then stops.
+// Reads a recording back in order. A file cut off mid-way (a crash, a full disk, or a day the bot is
+// still writing) yields the complete records before the cut and then stops.
 export async function* readRecording(file: string): AsyncIterable<{ raw: Uint8Array; at: number }> {
   const gunzip = createReadStream(file).pipe(createGunzip());
   let buf: Buffer = Buffer.alloc(0);
@@ -77,6 +77,11 @@ export async function* readRecording(file: string): AsyncIterable<{ raw: Uint8Ar
       buf = buf.subarray(offset);
     }
   } catch (error) {
-    if (!(error instanceof Error && /unexpected end of file|incorrect header check/i.test(error.message))) throw error;
+    // A cut or still-being-written tail shows up as one of zlib's data errors.
+    const code = (error as NodeJS.ErrnoException).code;
+    const truncated =
+      code === 'Z_DATA_ERROR' || code === 'Z_BUF_ERROR' ||
+      (error instanceof Error && /unexpected end of file|incorrect header check/i.test(error.message));
+    if (!truncated) throw error;
   }
 }
