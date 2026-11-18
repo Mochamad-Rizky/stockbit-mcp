@@ -27,13 +27,25 @@ export const FCA_FACT = 'Papan pemantauan khusus (lelang berkala)';
 const BUY_SETUPS = new Set<Setup>(['haka_sweep', 'offer_thinning', 'big_lot_burst', 'rvol_spike', 'day_high_break', 'markup']);
 const MARKUP_WINDOW_MS = 30 * 60_000;
 
+const JAKARTA_MS = 7 * 3_600_000;
+// Whether the tape holds the stock's opening trades (first trade by 09:05 Jakarta). The day's open,
+// high and low are only known then; a bot started mid-session must not treat "since I started" as
+// "today".
+export function sawOpen(tape: SymbolTape): boolean {
+  if (!tape.firstTime) return false;
+  const d = new Date(tape.firstTime + JAKARTA_MS);
+  return d.getUTCHours() * 60 + d.getUTCMinutes() <= 9 * 60 + 5;
+}
+
 // Distribution: over 15 minutes the price held or rose while big seller-initiated lots dominated,
 // on a stock that has already run at least 3 ticks above its open (distribution follows a markup).
 export function isDistribution(tape: SymbolTape, now: number, cfg: WatchConfig): boolean {
   const w = tape.window(900, now);
   if (w.trades === 0) return false;
   const haki = 1 - tape.hakaShare(900, now);
-  return w.last >= w.first && haki >= cfg.day.distHakiMin && w.bigSells >= 3 && tickDistance(tape.day().open, w.last) >= 3;
+  return (
+    sawOpen(tape) && w.last >= w.first && haki >= cfg.day.distHakiMin && w.bigSells >= 3 && tickDistance(tape.day().open, w.last) >= 3
+  );
 }
 
 export function detectIntraday(input: IntradayInput, now: number): Signal[] {
@@ -114,7 +126,7 @@ export function detectIntraday(input: IntradayInput, now: number): Signal[] {
   if (!info.fca) {
     // Day-high break on volume.
     const before = tape.highBefore(60, now);
-    if (before > 0 && last > before && rvol5 >= cfg.day.breakoutMinRvol) {
+    if (sawOpen(tape) && before > 0 && last > before && rvol5 >= cfg.day.breakoutMinRvol) {
       add('day', 'day_high_break', 'Tembus high harian', 'BELI', [fiveMinFact, `Tembus high harian ${idNum(before)} → ${idNum(last)}`, bidFact],
         [...comp('high baru', POINTS.dayHigh), ...comp('RVOL', rvolPoints(rvol5)), ...comp('HAKA', hakaPoints(haka5)),
           ...comp('bid', bidNear ? POINTS.bidWall : 0)]);

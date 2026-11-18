@@ -8,6 +8,7 @@ import { info, T0, trade } from './tape-helpers.js';
 const cfg = parseWatchConfig({});
 const E = 10_000_000; // expected IDR per minute
 const NOW = T0 + 30 * 60_000;
+const OPEN = Date.parse('2026-11-18T09:00:00+07:00');
 
 function base(t: SymbolTape, price: number, untilMs: number, lots = 20) {
   // 25 minutes of quiet two-sided trading before the action.
@@ -92,6 +93,7 @@ describe('day detectors', () => {
 
   it('day high break needs a new high on volume', () => {
     const t = new SymbolTape();
+    t.add(trade('X', 1000, 20, 'buy', OPEN + 30_000));
     base(t, 1000, NOW);
     t.add(trade('X', 1010, 20, 'buy', NOW - 10 * 60_000));
     for (let i = 0; i < 20; i += 1) t.add(trade('X', 1005, 200, 'buy', NOW - 280_000 + i * 12_000));
@@ -126,11 +128,25 @@ describe('day detectors', () => {
 
   it('distribution: price held while big HAKI lots dominate says HINDARI', () => {
     const t = new SymbolTape();
+    t.add(trade('X', 800, 50, 'buy', OPEN + 30_000));
     base(t, 800, NOW, 50);
     for (let i = 0; i < 40; i += 1) t.add(trade('X', 815 + (i % 2) * 5, i % 10 === 0 ? 30 : 4_000, i % 10 === 0 ? 'buy' : 'sell', NOW - 850_000 + i * 20_000));
     t.add(trade('X', 820, 10, 'buy', NOW - 500));
     expect(isDistribution(t, NOW, cfg)).toBe(true);
     expect(detectIntraday(input(t), NOW).find((s) => s.setup === 'distribution')?.action).toBe('HINDARI');
+  });
+
+  it('day high break and distribution need the open on the tape (bot started mid-session)', () => {
+    const t = new SymbolTape();
+    base(t, 1000, NOW); // first trade seen at 09:35
+    t.add(trade('X', 1010, 20, 'buy', NOW - 10 * 60_000));
+    for (let i = 0; i < 20; i += 1) t.add(trade('X', 1005, 200, 'buy', NOW - 280_000 + i * 12_000));
+    t.add(trade('X', 1015, 200, 'buy', NOW - 5_000));
+    expect(setups(detectIntraday(input(t), NOW))).not.toContain('day_high_break');
+    const d = new SymbolTape();
+    base(d, 800, NOW, 50);
+    for (let i = 0; i < 40; i += 1) d.add(trade('X', 815 + (i % 2) * 5, i % 10 === 0 ? 30 : 4_000, i % 10 === 0 ? 'buy' : 'sell', NOW - 850_000 + i * 20_000));
+    expect(isDistribution(d, NOW, cfg)).toBe(false);
   });
 
   it('FCA stock never gets haka sweep and carries the board fact', () => {
