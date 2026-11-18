@@ -99,6 +99,25 @@ describe('replay and pipeline', () => {
   });
 });
 
+describe('holding exits on the live path', () => {
+  it('a holding falling through avg −5% alerts exit_stop once', async () => {
+    const { alerts, sender } = collect();
+    const p = new Pipeline({
+      cfg, http: fakeHttp(universeRoutes), universe: Universe.of([info('SWEP', 3_200_000_000)]), logger: createLogger('silent'),
+      notifier: new Notifier({ cfg, senders: [sender], logger: createLogger('silent') }),
+      holdings: [{ symbol: 'SWEP', lots: 10, avgPrice: 300 }],
+    });
+    // 300 → 270 in 2-rupiah steps, one trade every 6 s
+    for (let i = 0, price = 300; price >= 270; i += 1, price -= 2) {
+      p.onEvent({ kind: 'trades', trades: [{ symbol: 'SWEP', price, shares: 1000, value: price * 1000, side: 'sell', time: T + i * 6000, tradeNo: i, board: 1 }] }, T + i * 6000);
+      await p.idle();
+    }
+    const stops = alerts.filter((a) => a.signal.setup === 'exit_stop');
+    expect(stops).toHaveLength(1);
+    expect(stops[0]!.signal.facts[1]).toBe('Harga 284 ≤ stop 284'); // avg 300 −5% = 285 → floorTick 284
+  });
+});
+
 describe('WatchRunner', () => {
   it('missing trading session sends the notice once', async () => {
     const texts: string[] = [];

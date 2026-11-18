@@ -15,6 +15,13 @@ describe('IDX tick grid', () => {
     expect(onTick(tickUp(4975, 3))).toBe(true);
   });
 
+  it('never loops on a non-finite price', () => {
+    expect(floorTick(Number.NaN)).toBeNaN();
+    expect(ceilTick(Number.NaN)).toBeNaN();
+    expect(tickUp(Number.NaN)).toBeNaN();
+    expect(tickDown(Number.POSITIVE_INFINITY)).toBe(Number.POSITIVE_INFINITY);
+  });
+
   it('snaps an off-grid price before stepping', () => {
     expect(tickUp(1003)).toBe(1005);
     expect(tickDown(1003)).toBe(1000);

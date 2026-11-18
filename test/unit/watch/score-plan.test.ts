@@ -57,6 +57,18 @@ describe('makePlan', () => {
     expect(p.lots).toBe(100);
   });
 
+  it('a buy with no room to the first target turns into TUNGGU with no lots', () => {
+    const atAra = makePlan(sig({ refs: { last: 1250, dayLow: 1200 } }), { ara: 1250, cash: 12_000_000, value5m: 5e9, cfg: defaults });
+    expect(atAra).toMatchObject({ action: 'TUNGGU', lots: 0, note: 'Ruang naik ke target terlalu sempit (ARA atau tembok offer); jangan kejar' });
+    const wall = makePlan(sig({ refs: { last: 1000, dayLow: 960, offerWall: 1005 } }), { cash: 12_000_000, value5m: 5e9, cfg: defaults });
+    expect(wall).toMatchObject({ action: 'TUNGGU', lots: 0 });
+  });
+
+  it('swing lots are capped by the expected 5-minute value', () => {
+    const p = makePlan(sig({ style: 'swing', setup: 'swing_accumulation', refs: { last: 100, swingLow: 90, ma20: 95 } }), { cash: 1e9, value5m: 2_000_000, cfg: defaults });
+    expect(p.lots).toBe(10); // 5% × 2 M / (100 × 100)
+  });
+
   it('TUNGGU waits at the bid wall', () => {
     const p = makePlan(sig({ style: 'day', setup: 'accumulation', action: 'TUNGGU', refs: { last: 498, bidWall: 496, dayLow: 480 } }), { value5m: 1e9, cfg: defaults });
     expect(p).toMatchObject({ action: 'TUNGGU', waitPrice: 496, entryHigh: 496, entryLow: 494 });

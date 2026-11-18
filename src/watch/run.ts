@@ -4,7 +4,7 @@ import { StockbitMcpError } from '../core/errors.js';
 import type { Logger } from '../core/logger.js';
 import { jakartaDate, phaseAt, swingTimes, type Phase } from './clock.js';
 import type { WatchConfig } from './config.js';
-import { holdingPlan, detectExit } from './detect/exit.js';
+import { detectExit, holdingPlan, type HoldingLevels } from './detect/exit.js';
 import { detectIntraday } from './detect/intraday.js';
 import { detectSwing, swingList } from './detect/swing.js';
 import { decodeFrame } from './feed/codec.js';
@@ -59,8 +59,10 @@ export class Pipeline {
   private readonly quotes = new Map<string, Promise<Quote>>();
   private readonly prices = new Map<string, LivePrice>();
   private readonly pending = new Set<Promise<void>>();
-  // Last price seen per holding, so exit levels alert on crossing.
+  // Last price seen per holding, so exit levels alert on crossing, and each holding's levels for the
+  // day (fixed at the first look, replaced by the plan of an alert on that stock).
   private readonly holdingLast = new Map<string, number>();
+  private readonly holdingLevels = new Map<string, HoldingLevels>();
   private channelsKey = '';
   private lastTick = 0;
 
@@ -168,7 +170,12 @@ export class Pipeline {
       const refs: PlanRefs = { last: day.last, dayLow: day.low };
       const wall = book?.walls('bid', this.d.cfg.book.wallPersistSec, at).filter((w) => w.price <= day.last).sort((a, b) => b.price - a.price)[0];
       if (wall) refs.bidWall = wall.price;
-      signals.push(...detectExit(holding, tape, holdingPlan(holding, refs, this.d.cfg), at, this.d.cfg, this.holdingLast.get(symbol)));
+      let levels = this.holdingLevels.get(symbol);
+      if (!levels) {
+        levels = holdingPlan(holding, refs, this.d.cfg);
+        this.holdingLevels.set(symbol, levels);
+      }
+      signals.push(...detectExit(holding, tape, levels, at, this.d.cfg, this.holdingLast.get(symbol)));
       this.holdingLast.set(symbol, day.last);
     }
     const value5m = tape.window(300, at).value;
@@ -205,13 +212,18 @@ export class Pipeline {
             ...(value5m === undefined ? {} : { value5m }),
           });
     const alert: Alert = {
-      signal: { ...sig, components },
+      signal: { ...sig, components, ...(plan ? { action: plan.action } : {}) },
       score,
       ...(plan ? { plan } : {}),
       risk: { notations: info.notations, uma: info.uma, fca: info.fca, ...(toAraPct === undefined ? {} : { toAraPct }) },
       price: { last, changePct: prev ? (last - prev) / prev : 0 },
     };
-    if (await this.d.notifier.send(alert)) this.sent.push(alert);
+    if (await this.d.notifier.send(alert)) {
+      this.sent.push(alert);
+      if (plan && plan.action === 'BELI' && this.holdings.some((h) => h.symbol === sig.symbol)) {
+        this.holdingLevels.set(sig.symbol, { stop: plan.stop, tp1: plan.tp1, tp2: plan.tp2 });
+      }
+    }
   }
 }
 

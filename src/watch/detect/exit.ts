@@ -14,11 +14,13 @@ export interface HoldingLevels {
   tp2: number;
 }
 
-// Stop: whichever is nearer below the price of (average −holdingStopPct) and the structure (day low
-// or holding bid wall, one tick under). Targets: 1.5R and 2.5R from the average price.
+// Stop: whichever is nearer below the price of (average −holdingStopPct) and a holding bid wall
+// (one tick under). The day's low is not used: it trails the price by construction, so a stop under
+// it would never be hit. Targets: 1.5R and 2.5R from the average price. The caller computes this once
+// per holding per day and keeps it.
 export function holdingPlan(h: Holding, refs: PlanRefs, cfg: WatchConfig): HoldingLevels {
   const byPct = floorTick(h.avgPrice * (1 - cfg.risk.holdingStopPct));
-  const structure = [refs.dayLow, refs.bidWall].filter((x): x is number => x !== undefined && x > 0);
+  const structure = [refs.bidWall].filter((x): x is number => x !== undefined && x > 0);
   const candidates = [byPct, ...(structure.length ? [tickDown(Math.max(...structure))] : [])];
   const below = candidates.filter((c) => c < refs.last);
   const stop = Math.max(...(below.length ? below : candidates));

@@ -36,6 +36,7 @@ export function nearestTicks(price: number): [number, number] {
 
 // The highest valid price at or below `price`.
 export function floorTick(price: number): number {
+  if (!Number.isFinite(price)) return price;
   const p = Math.floor(price);
   if (onTick(p)) return p;
   let lower = p - (p % stepAbove(p));
@@ -45,13 +46,14 @@ export function floorTick(price: number): number {
 
 // The lowest valid price at or above `price`.
 export function ceilTick(price: number): number {
-  if (onTick(price)) return price;
+  if (!Number.isFinite(price) || onTick(price)) return price;
   const lower = floorTick(price);
   return lower + stepAbove(lower);
 }
 
 // `n` valid prices up; an off-grid start snaps up as the first step.
 export function tickUp(price: number, n = 1): number {
+  if (!Number.isFinite(price)) return price;
   let p = price;
   for (let i = 0; i < n; i += 1) p = onTick(p) ? p + stepAbove(p) : ceilTick(p);
   return p;
@@ -59,6 +61,7 @@ export function tickUp(price: number, n = 1): number {
 
 // `n` valid prices down; an off-grid start snaps down as the first step.
 export function tickDown(price: number, n = 1): number {
+  if (!Number.isFinite(price)) return price;
   let p = price;
   for (let i = 0; i < n; i += 1) p = onTick(p) ? Math.max(1, p - stepBelow(p)) : floorTick(p);
   return p;
@@ -66,6 +69,7 @@ export function tickDown(price: number, n = 1): number {
 
 // Signed number of grid steps from `from` to `to` (both snapped to the grid first).
 export function tickDistance(from: number, to: number): number {
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return 0;
   const a = floorTick(Math.min(from, to));
   const b = floorTick(Math.max(from, to));
   let n = 0;

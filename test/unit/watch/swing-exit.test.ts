@@ -53,9 +53,9 @@ describe('swing accumulation', () => {
 describe('exit warnings', () => {
   const h = { symbol: 'X', lots: 10, avgPrice: 1000 };
 
-  it('holding stop is the nearer of avg −5% and structure', () => {
-    // avg −5% = 950; structure max(dayLow 970, bidWall 960) − 1 tick = 965 → nearer below 1010 is 965
-    expect(holdingPlan(h, { last: 1010, dayLow: 970, bidWall: 960 }, cfg)).toEqual({ stop: 965, tp1: 1055, tp2: 1090 });
+  it('holding stop is the nearer of avg −5% and a holding bid wall; the day low is ignored', () => {
+    // avg −5% = 950; bid wall 960 − 1 tick = 955 → nearer below 1010 is 955; R = 45 → tp1 1070, tp2 1115
+    expect(holdingPlan(h, { last: 1010, dayLow: 1005, bidWall: 960 }, cfg)).toEqual({ stop: 955, tp1: 1070, tp2: 1115 });
     // no structure → 950; R = 50 → tp1 1075, tp2 1125
     expect(holdingPlan(h, { last: 1010 }, cfg)).toEqual({ stop: 950, tp1: 1075, tp2: 1125 });
   });

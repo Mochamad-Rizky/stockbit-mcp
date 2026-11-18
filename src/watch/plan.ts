@@ -86,6 +86,10 @@ export function makePlan(sig: Signal, ctx: PlanContext): TradePlan {
     ...(waitPrice === undefined ? {} : { waitPrice: entryHigh }),
   };
   if (r <= 0) return { ...plan, note: 'Stop terlalu dekat; tentukan sendiri' };
+  // No room up to the first target (at ARA, or an offer wall right above): do not chase.
+  if (plan.action === 'BELI' && plan.rr < 1) {
+    return { ...plan, action: 'TUNGGU', waitPrice: entryHigh, note: 'Ruang naik ke target terlalu sempit (ARA atau tembok offer); jangan kejar' };
+  }
   const caps = [riskIdr / (r * 100)];
   if (ctx.cash !== undefined) caps.push(ctx.cash / (entryHigh * 100));
   if (ctx.value5m !== undefined && ctx.value5m > 0) caps.push((cfg.risk.liquidityShare * ctx.value5m) / (entryHigh * 100));
