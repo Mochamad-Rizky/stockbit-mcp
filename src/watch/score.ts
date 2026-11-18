@@ -1,4 +1,7 @@
-import type { ScoreComponent } from './types.js';
+import type { WatchConfig } from './config.js';
+import type { SymbolBook } from './market/book.js';
+import type { ScoreComponent, Style } from './types.js';
+import type { StockInfo } from './universe.js';
 
 // The point values behind every alert score, in one place. Setup points come from the detectors;
 // risk penalties and the total are added when the alert is built.
@@ -33,3 +36,30 @@ export const POINTS = {
   markup: 20,
   distribution: 40,
 } as const;
+
+// ---- Risk penalties and the total ------------------------------------------------------------
+
+
+// Notations (X is counted as FCA instead), UMA, distance to ARA, fake walls seen today, a wide
+// spread and the special monitoring board.
+export function riskComponents(info: StockInfo, toAraPct: number | undefined, book?: SymbolBook): ScoreComponent[] {
+  const notations = info.notations.filter((n) => n !== 'X').length;
+  const fakes = book?.fakeWalls() ?? 0;
+  const ara = toAraPct === undefined ? 0 : toAraPct < 0.05 ? -10 : toAraPct >= 0.15 ? 5 : 0;
+  return [
+    ...comp('notasi', -Math.min(15, 5 * notations)),
+    ...comp('UMA', info.uma ? -10 : 0),
+    ...comp('ARA', ara),
+    ...comp('palsu', -Math.min(15, 5 * fakes)),
+    ...comp('spread', book && book.spreadTicks() > 3 ? -5 : 0),
+    ...comp('FCA', info.fca ? -10 : 0),
+  ];
+}
+
+export function scoreOf(components: ScoreComponent[]): number {
+  return Math.min(100, Math.max(0, components.reduce((s, c) => s + c.points, 0)));
+}
+
+export function passes(style: Style, score: number, cfg: WatchConfig): boolean {
+  return style === 'exit' || score >= cfg.thresholds[style];
+}
