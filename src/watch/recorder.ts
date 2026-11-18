@@ -57,31 +57,68 @@ export class Recorder {
   }
 }
 
+const isTruncation = (error: unknown) => {
+  const code = (error as NodeJS.ErrnoException).code;
+  return (
+    code === 'Z_DATA_ERROR' ||
+    code === 'Z_BUF_ERROR' ||
+    (error instanceof Error && /unexpected end of file|incorrect header check/i.test(error.message))
+  );
+};
+
 // Reads a recording back in order. A file cut off mid-way (a crash, a full disk, or a day the bot is
-// still writing) yields the complete records before the cut and then stops.
+// still writing) yields the records before the cut and then stops. Zlib drops its unflushed output
+// when it meets the bad bytes, so input goes in small slices with a small output buffer: at most
+// about 1 KB of records just before the cut is lost.
 export async function* readRecording(file: string): AsyncIterable<{ raw: Uint8Array; at: number }> {
-  const gunzip = createReadStream(file).pipe(createGunzip());
+  const gunzip = createReadStream(file, { highWaterMark: 1024 }).pipe(createGunzip({ chunkSize: 1024 }));
+  const queue: Buffer[] = [];
+  let done = false;
+  let failure: unknown;
+  let wake: (() => void) | undefined;
+  const notify = () => {
+    const w = wake;
+    wake = undefined;
+    w?.();
+  };
+  gunzip.on('data', (c: Buffer) => {
+    queue.push(c);
+    if (queue.length > 256) gunzip.pause();
+    notify();
+  });
+  gunzip.on('end', () => {
+    done = true;
+    notify();
+  });
+  gunzip.on('error', (error) => {
+    if (!isTruncation(error)) failure = error;
+    done = true;
+    notify();
+  });
+
   let buf: Buffer = Buffer.alloc(0);
-  try {
-    for await (const chunk of gunzip as AsyncIterable<Buffer>) {
-      buf = buf.length === 0 ? chunk : Buffer.concat([buf, chunk]);
-      let offset = 0;
-      while (buf.length - offset >= 12) {
-        const len = buf.readUInt32BE(offset);
-        if (buf.length - offset < 12 + len) break;
-        const at = buf.readDoubleBE(offset + 4);
-        const raw = new Uint8Array(buf.subarray(offset + 12, offset + 12 + len));
-        offset += 12 + len;
-        yield { raw, at };
-      }
-      buf = buf.subarray(offset);
+  for (;;) {
+    const chunk = queue.shift();
+    if (!chunk) {
+      if (done) break;
+      gunzip.resume();
+      await new Promise<void>((r) => {
+        wake = r;
+      });
+      continue;
     }
-  } catch (error) {
-    // A cut or still-being-written tail shows up as one of zlib's data errors.
-    const code = (error as NodeJS.ErrnoException).code;
-    const truncated =
-      code === 'Z_DATA_ERROR' || code === 'Z_BUF_ERROR' ||
-      (error instanceof Error && /unexpected end of file|incorrect header check/i.test(error.message));
-    if (!truncated) throw error;
+    if (queue.length < 64) gunzip.resume();
+    buf = buf.length === 0 ? chunk : Buffer.concat([buf, chunk]);
+    let offset = 0;
+    while (buf.length - offset >= 12) {
+      const len = buf.readUInt32BE(offset);
+      if (buf.length - offset < 12 + len) break;
+      const at = buf.readDoubleBE(offset + 4);
+      const raw = new Uint8Array(buf.subarray(offset + 12, offset + 12 + len));
+      offset += 12 + len;
+      yield { raw, at };
+    }
+    buf = buf.subarray(offset);
   }
+  if (failure) throw failure;
 }
