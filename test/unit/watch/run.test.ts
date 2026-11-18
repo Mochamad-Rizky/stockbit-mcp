@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StockbitMcpError } from '../../../src/core/errors.js';
@@ -7,7 +7,7 @@ import { phaseAt, swingTimes } from '../../../src/watch/clock.js';
 import { parseWatchConfig } from '../../../src/watch/config.js';
 import { Notifier, type Sender } from '../../../src/watch/notify/notifier.js';
 import { Recorder } from '../../../src/watch/recorder.js';
-import { memoSuccess, Pipeline, replay, WatchRunner } from '../../../src/watch/run.js';
+import { AUTH_NOTICE, memoSuccess, Pipeline, replay, WatchRunner } from '../../../src/watch/run.js';
 import type { Alert, Channels } from '../../../src/watch/types.js';
 import { Universe } from '../../../src/watch/universe.js';
 import { fakeHttp } from './fake-http.js';
@@ -34,6 +34,11 @@ describe('market clock', () => {
   it('swing times: after the break starts, 15:00 and 16:10', () => {
     expect(swingTimes(J('2026-11-20T10:00:00'))).toEqual([J('2026-11-20T11:35:00'), J('2026-11-20T15:00:00'), J('2026-11-20T16:10:00')]);
     expect(swingTimes(J('2026-11-19T10:00:00'))[0]).toBe(J('2026-11-19T12:05:00'));
+  });
+
+  it('has no swing times on weekends', () => {
+    expect(swingTimes(J('2026-11-21T10:00:00'))).toEqual([]);
+    expect(swingTimes(J('2026-11-22T10:00:00'))).toEqual([]);
   });
 });
 
@@ -133,6 +138,34 @@ describe('holding exits on the live path', () => {
   });
 });
 
+const day = (i: number) => 1_790_000_000 + i * 86_400;
+const swingBars = Array.from({ length: 25 }, (_, i) => ({
+  unixdate: day(i), open: 100, low: 95, lot: i >= 22 ? 2000 : 1000,
+  close: i >= 22 ? 104 : 100, high: i === 10 ? 106 : 105,
+}));
+const swingRoutes = (symbol: string) => ({
+  [`/chartbit/${symbol}/price/daily`]: { data: { chartbit: swingBars } },
+  [`/marketdetectors/${symbol}`]: { data: { bandar_detector: { avg: { accdist: 'Acc' } }, broker_summary: { brokers_buy: [] } } },
+  '/order-trade/foreign-domestic/summary': { data: { net: { all: { raw: 1e9 } } } },
+  [`/company-price-feed/v2/orderbook/companies/${symbol}`]: { data: { previous: 100 } },
+});
+
+describe('swing scan on the pipeline', () => {
+  it('caps swing lots by the expected 5-minute value', async () => {
+    const { alerts, sender } = collect();
+    const p = new Pipeline({
+      cfg, http: fakeHttp(swingRoutes('THIN')), universe: Universe.of([info('THIN', 128_000_000)]), logger: createLogger('silent'),
+      notifier: new Notifier({ cfg, senders: [sender], logger: createLogger('silent') }),
+      holdings: [{ symbol: 'THIN', lots: 1, avgPrice: 90 }], cash: 1e9, sleep: async () => {},
+    });
+    await p.swingScan(J('2026-11-18T15:00:00'));
+    const swing = alerts.find((a) => a.signal.setup === 'swing_accumulation');
+    expect(swing).toBeDefined();
+    // valuema20 128 M → 400 k per minute → 2 M per 5 min; 5% / (104 × 100) → 9 lots
+    expect(swing!.plan!.lots).toBe(9);
+  });
+});
+
 describe('WatchRunner', () => {
   it('missing trading session sends the notice once', async () => {
     const texts: string[] = [];
@@ -159,6 +192,90 @@ describe('WatchRunner', () => {
 
 import { launchAgentPlist } from '../../../src/cli/watch.js';
 
+describe('WatchRunner resilience', () => {
+  const base = { ...universeRoutes, '/portfolio/v2/list': { data: { results: [] } }, '/watchlist': { data: [] } };
+  const mk = (http: ReturnType<typeof fakeHttp>, extra: Partial<ConstructorParameters<typeof WatchRunner>[0]> = {}) =>
+    new WatchRunner({
+      http, cfg, home: mkdtempSync(join(tmpdir(), 'home-')), logger: createLogger('silent'),
+      notifier: new Notifier({ cfg, senders: [], logger: createLogger('silent') }),
+      userId: '5', feed: { start: vi.fn(), stop: vi.fn(), setChannels: vi.fn(), connected: false },
+      now: () => J('2026-11-18T08:50:00'), timers: false, sleep: async () => {}, ...extra,
+    });
+
+  it('retries the startup reads instead of failing on one error', async () => {
+    let n = 0;
+    const http = fakeHttp({ ...base, '/emitten/classification/list': () => {
+      n += 1;
+      if (n === 1) throw new StockbitMcpError('UPSTREAM', 'Stockbit 502');
+      return { data: [{ id: 1 }] };
+    } });
+    const runner = mk(http);
+    await expect(runner.start()).resolves.toBeUndefined();
+    expect(n).toBe(2);
+    await runner.stop();
+  });
+
+  it('a failed read at pre-open is logged, not fatal', async () => {
+    let fail = false;
+    const lines: string[] = [];
+    const http = fakeHttp({ ...base, '/portfolio/v2/list': () => {
+      if (fail) throw new StockbitMcpError('UPSTREAM', 'Stockbit 503');
+      return { data: { results: [] } };
+    } });
+    const runner = mk(http, { logger: createLogger('warn', (l) => lines.push(l)) });
+    await runner.start();
+    fail = true;
+    await expect(runner.preopen()).resolves.toBeUndefined();
+    expect(lines.some((l) => l.includes('pre-open refresh failed'))).toBe(true);
+    await runner.stop();
+  });
+
+  it('writes sent alerts to the day file', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'home-'));
+    const notifier = new Notifier({ cfg, senders: [], logger: createLogger('silent') });
+    const runner = mk(fakeHttp(base), { home, notifier });
+    await runner.start();
+    await notifier.send({
+      signal: { style: 'day', symbol: 'SWEP', setup: 'rvol_spike', title: 'Volume meledak', action: 'BELI', facts: [], components: [], at: J('2026-11-18T09:10:00'), refs: { last: 274 } },
+      score: 70, risk: { notations: [], uma: false, fca: false }, price: { last: 274, changePct: 0 },
+    });
+    await runner.stop();
+    const file = join(home, 'tape', '2026-11-18.alerts.ndjson');
+    expect(existsSync(file)).toBe(true);
+    expect(readFileSync(file, 'utf8').trim().split('\n')).toHaveLength(1);
+  });
+
+  it('tells the user once when the session cannot be refreshed', async () => {
+    const texts: string[] = [];
+    const notifier = new Notifier({ cfg, senders: [{ name: 'c', send: async () => {}, text: async (t) => { texts.push(t); } }], logger: createLogger('silent') });
+    const runner = mk(fakeHttp(base), { notifier });
+    await runner.authFailed();
+    expect(texts).toEqual([AUTH_NOTICE]);
+  });
+
+  it('waits for the 16:10 swing scan before ending the day', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let now = J('2026-11-18T16:11:00');
+    const onDayEnd = vi.fn();
+    const http = fakeHttp({
+      ...base, ...swingRoutes('SWEP'),
+      '/portfolio/v2/list': { data: { results: [{ symbol: 'SWEP', qty: { balance: { lot: 1 } }, price: { average: { price: 260 } } }] } },
+      '/chartbit/SWEP/price/daily': async () => { await gate; return { data: { chartbit: [] } }; },
+    });
+    const runner = mk(http, { now: () => now, onDayEnd });
+    await runner.start(); // 16:11: the 16:10 scan starts and waits on the gate
+    now = J('2026-11-18T16:16:00');
+    runner.applyPhase(now);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(onDayEnd).not.toHaveBeenCalled();
+    release();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(onDayEnd).toHaveBeenCalledTimes(1);
+    await runner.stop();
+  });
+});
+
 describe('watch command helpers', () => {
   it('writes a weekday 08:40 LaunchAgent', () => {
     const xml = launchAgentPlist('/usr/local/bin/node', '/repo/dist/cli.js', '/Users/x/.stockbit-mcp');
@@ -184,8 +301,10 @@ describe('watch command helpers', () => {
     expect(onDayEnd).not.toHaveBeenCalled();
     now = J('2026-11-18T16:16:00');
     runner.applyPhase(now);
+    await new Promise((r) => setTimeout(r, 0)); // day end waits for any running swing scan
     expect(onDayEnd).toHaveBeenCalledTimes(1);
     runner.applyPhase(now + 60_000);
+    await new Promise((r) => setTimeout(r, 0));
     expect(onDayEnd).toHaveBeenCalledTimes(1);
     await runner.stop();
   });

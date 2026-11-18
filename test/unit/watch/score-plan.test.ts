@@ -76,8 +76,8 @@ describe('makePlan', () => {
 
   it('swing plans use the swing low or the 20-day average', () => {
     const p = makePlan(sig({ style: 'swing', setup: 'swing_accumulation', refs: { last: 1040, swingLow: 990, ma20: 1002.4, nDayHigh: 1060 } }), { cfg: defaults });
-    // candidates below 1035: swing low − 1 tick = 985, floorTick(ma20) = 1000 → 1000; R = 40 → tp1 1100 capped by the 20-day high → 1055
-    expect(p).toMatchObject({ stop: 1000, tp1: 1055, tp2: 1140 });
+    // candidates below 1035: swing low − 1 tick = 985, floorTick(ma20) = 1000 → 1000; R = 40 → tp1 1100 (a breakout: not capped at the 20-day high)
+    expect(p).toMatchObject({ stop: 1000, tp1: 1100, tp2: 1140 });
   });
 });
 

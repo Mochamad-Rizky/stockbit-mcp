@@ -31,8 +31,16 @@ export class Notifier {
   private readonly lastFailureLog = new Map<string, number>();
   private readonly now: () => number;
 
+  private recorder: { alert(record: object): void } | undefined;
+
   constructor(private readonly o: NotifierOptions) {
     this.now = o.now ?? Date.now;
+    this.recorder = o.recorder;
+  }
+
+  // Where sent alerts are written (the runner's day file).
+  setRecorder(recorder: { alert(record: object): void } | undefined): void {
+    this.recorder = recorder;
   }
 
   // Gated on the alert's own time, so a replay (faster than the clock) behaves like the live day.
@@ -55,7 +63,7 @@ export class Notifier {
 
     const text = { telegram: formatTelegram(a, now), macos: formatMacos(a) };
     await this.fanOut(now, (s) => s.send(a, text));
-    this.o.recorder?.alert({ at: now, ...a });
+    this.recorder?.alert({ at: now, ...a });
     return true;
   }
 

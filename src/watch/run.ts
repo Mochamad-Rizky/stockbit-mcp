@@ -27,6 +27,8 @@ import { LEARN_MINUTES, type StockInfo, Universe } from './universe.js';
 const EVAL_EVERY_MS = 5_000;
 // The best ARA bonus a risk check can add, used to skip REST reads for signals that cannot pass.
 const MAX_ARA_BONUS = 5;
+export const AUTH_NOTICE =
+  'Sesi Stockbit kedaluwarsa dan tidak bisa diperpanjang: jalankan stockbit-mcp login, lalu jalankan ulang stockbit-mcp watch.';
 export const TRADING_NOTICE =
   'Sesi trading belum aktif: jalankan stockbit-mcp login --trading supaya lot dan peringatan portofolio jalan.';
 
@@ -138,7 +140,8 @@ export class Pipeline {
         const bandar = await getBandar(this.d.http, symbol);
         const foreign = await getForeignNet(this.d.http, symbol);
         const sig = detectSwing(symbol, { bars, ...(bandar ? { bandar } : {}), ...(foreign === undefined ? {} : { foreign }), info }, now);
-        if (sig) await this.emit(sig, info, this.books.get(symbol), undefined);
+        const expected = this.d.universe.expectedPerMinute(symbol);
+        if (sig) await this.emit(sig, info, this.books.get(symbol), expected === undefined ? undefined : expected * 5);
       } catch (error) {
         this.d.logger.warn('swing scan failed', { symbol, error: error instanceof Error ? error.message : String(error) });
       }
@@ -274,7 +277,10 @@ export interface RunnerDeps {
   timers?: boolean;
   // Called once a trading day is over (after the last swing scan).
   onDayEnd?: () => void;
+  sleep?: (ms: number) => Promise<void>;
 }
+
+const STARTUP_RETRY_MS = [5_000, 15_000, 45_000];
 
 const ACTIVE: Phase[] = ['preopen', 'session1', 'break', 'session2', 'preclose'];
 
@@ -288,19 +294,38 @@ export class WatchRunner {
   private phase: Phase | undefined;
   private trades = 0;
   private dayEnded = '';
+  private authNoticeDay = '';
+  private swingRun: Promise<void> | undefined;
   private readonly now: () => number;
 
   constructor(private readonly d: RunnerDeps) {
     this.now = d.now ?? Date.now;
   }
 
+  // A read that fails at 08:40 (a timeout, a 5xx) is tried again before giving up.
+  private async retry<T>(what: string, read: () => Promise<T>): Promise<T> {
+    const sleep = this.d.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+    for (let i = 0; ; i += 1) {
+      try {
+        return await read();
+      } catch (error) {
+        if (i >= STARTUP_RETRY_MS.length) throw error;
+        this.d.logger.warn(`${what} failed, retrying`, { error: error instanceof Error ? error.message : String(error) });
+        await sleep(STARTUP_RETRY_MS[i]!);
+      }
+    }
+  }
+
   async start(): Promise<void> {
     const now = this.now();
-    const universe = await Universe.load(this.d.http);
+    const universe = await this.retry('company list', () => Universe.load(this.d.http));
     this.d.logger.info('universe loaded', { stocks: universe.size, fca: universe.symbols().filter((s) => universe.get(s)?.fca).length });
-    const portfolio = await getPortfolio(this.d.http);
+    const portfolio = await this.retry('portfolio', () => getPortfolio(this.d.http));
     const watchlist = await getWatchlistSymbols(this.d.http).catch(() => []);
-    this.recorder = new Recorder(join(this.d.home, 'tape'), jakartaDate(now));
+    this.recorder = new Recorder(join(this.d.home, 'tape'), jakartaDate(now), (e) =>
+      this.d.logger.error('recording stopped', { error: e.message }),
+    );
+    this.d.notifier.setRecorder(this.recorder);
     this.pipeline = new Pipeline({
       cfg: this.d.cfg, http: this.d.http, universe, logger: this.d.logger, notifier: this.d.notifier, watchlist,
       holdings: portfolio?.holdings ?? [],
@@ -313,6 +338,7 @@ export class WatchRunner {
       this.feed = new DatafeedClient({
         userId: this.d.userId, tokens: this.d.auth, logger: this.d.logger,
         onEvent: (ev, raw, at) => this.onFeed(ev, raw, at),
+        onAuthFailed: () => void this.authFailed(),
       });
     }
     const held = this.pipeline.holdings.map((h) => h.symbol);
@@ -327,19 +353,33 @@ export class WatchRunner {
 
   // Reload holdings and cash before the open, and remind about the trading session once a day.
   async preopen(): Promise<void> {
-    const portfolio = await getPortfolio(this.d.http);
-    if (this.pipeline && portfolio) {
-      this.pipeline.holdings = portfolio.holdings;
-      this.pipeline.cash = portfolio.cash;
+    try {
+      const portfolio = await getPortfolio(this.d.http);
+      if (this.pipeline && portfolio) {
+        this.pipeline.holdings = portfolio.holdings;
+        this.pipeline.cash = portfolio.cash;
+      }
+      await this.checkTradingSession(portfolio !== undefined);
+    } catch (error) {
+      this.d.logger.warn('pre-open refresh failed', { error: error instanceof Error ? error.message : String(error) });
     }
-    await this.checkTradingSession(portfolio !== undefined);
+  }
+
+  // The datafeed's session was rejected and could not be refreshed: tell the user once a day.
+  async authFailed(): Promise<void> {
+    const today = jakartaDate(this.now());
+    if (this.authNoticeDay === today) return;
+    this.authNoticeDay = today;
+    await this.d.notifier.notice(AUTH_NOTICE);
   }
 
   async stop(): Promise<void> {
     for (const i of this.intervals) clearInterval(i);
     this.intervals = [];
     this.feed?.stop();
+    await this.swingRun;
     await this.pipeline?.idle();
+    this.d.notifier.setRecorder(undefined);
     await this.recorder?.close();
     this.recorder = undefined;
   }
@@ -366,15 +406,22 @@ export class WatchRunner {
     if (phase === 'preopen' && was !== undefined && was !== 'preopen') void this.preopen();
     const times = swingTimes(now);
     for (const t of times) {
-      if (now >= t && now - t < 10 * 60_000 && !this.swingDone.has(t)) {
+      if (now >= t && now - t < 10 * 60_000 && !this.swingDone.has(t) && this.pipeline) {
         this.swingDone.add(t);
-        void this.pipeline?.swingScan(now);
+        const pipeline = this.pipeline;
+        this.swingRun = Promise.resolve(this.swingRun)
+          .then(() => pipeline.swingScan(now))
+          .catch((error: unknown) => {
+            this.d.logger.warn('swing scan failed', { error: error instanceof Error ? error.message : String(error) });
+          });
       }
     }
     const today = jakartaDate(now);
-    if (phase === 'after' && now >= times[times.length - 1]! + 5 * 60_000 && this.dayEnded !== today) {
+    const lastSwing = times[times.length - 1];
+    if (phase === 'after' && lastSwing !== undefined && now >= lastSwing + 5 * 60_000 && this.dayEnded !== today) {
       this.dayEnded = today;
-      this.d.onDayEnd?.();
+      // Let a running scan finish first.
+      void Promise.resolve(this.swingRun).finally(() => this.d.onDayEnd?.());
     }
   }
 

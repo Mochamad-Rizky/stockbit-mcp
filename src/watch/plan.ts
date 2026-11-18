@@ -65,7 +65,9 @@ export function makePlan(sig: Signal, ctx: PlanContext): TradePlan {
   const r = entryHigh - stop;
   let tp1 = ceilTick(entryHigh + 1.5 * Math.max(r, 0));
   const tp2 = clamp(ceilTick(entryHigh + 2.5 * Math.max(r, 0)));
-  const cap = sig.style === 'swing' ? refs.nDayHigh : refs.offerWall;
+  // Swing setups sit just under their N-day high and expect to break it, so only intraday targets are
+  // capped (at a persisting offer wall).
+  const cap = sig.style === 'swing' ? undefined : refs.offerWall;
   if (cap !== undefined && cap > entryHigh && cap < tp1) tp1 = tickDown(cap);
   tp1 = clamp(tp1);
 

@@ -42,10 +42,11 @@ export function phaseAt(nowMs: number): Phase {
   return 'after';
 }
 
-// Lunch break start + 5 min, 15:00 and 16:10 of the Jakarta day of `dateMs`.
+// Lunch break start + 5 min, 15:00 and 16:10 of the Jakarta day of `dateMs`; none on weekends.
 export function swingTimes(dateMs: number): number[] {
   const { day, midnight } = local(dateMs);
-  const s = schedule(day) ?? MON_THU;
+  const s = schedule(day);
+  if (!s) return [];
   return [s.close1 + 5, hm(15, 0), hm(16, 10)].map((m) => midnight + m * 60_000);
 }
 
