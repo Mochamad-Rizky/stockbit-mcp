@@ -225,7 +225,7 @@ Endpoint: `GET exodus /order-trade/broker/distribution`
 
 *read only*
 
-For one broker code: the stocks it bought and sold most over a period, net or gross. Use it to follow a broker across the market.
+For one broker code: the stocks it bought and sold most over a period, net or gross. Use it to follow a broker across the market. With net_val_period, each stock also carries the broker's daily net (nval_trend), as in the app's Broker Transaction view.
 
 | Input | Required | Description |
 |---|---|---|
@@ -238,6 +238,7 @@ For one broker code: the stocks it bought and sold most over a period, net or gr
 | `to` |  | Custom range end; send instead of `period`. |
 | `limit` |  | limit Default 50. |
 | `page` |  | Next page while a side returned 50 rows. Default 1. |
+| `net_val_period` |  | Fills each row's nval_trend with the broker's daily net in that stock over the latest 7D/1M/3M of trading days (7, 21 or 63 points), ending at the last trading day whatever period or from/to is. Omitted: nval_trend is []. 6M and 1Y are in the app's enum but answered 404 "Data belum tersedia untuk periode ini" (2026-11-21), failing the whole call. |
 
 Endpoint: `GET exodus /order-trade/broker/activity`
 

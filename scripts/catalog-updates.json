@@ -1,0 +1,22 @@
+[
+ {
+  "id": "get_broker_activity",
+  "query": [
+   {
+    "name": "net_val_period",
+    "type": "enum",
+    "required": false,
+    "enum": [
+     "NET_VAL_PERIOD_7D",
+     "NET_VAL_PERIOD_1M",
+     "NET_VAL_PERIOD_3M",
+     "NET_VAL_PERIOD_6M",
+     "NET_VAL_PERIOD_1Y"
+    ],
+    "description": "Fills each row's nval_trend with the broker's daily net in that stock over the latest 7D/1M/3M of trading days (7, 21 or 63 points), ending at the last trading day whatever period or from/to is. Omitted: nval_trend is []. 6M and 1Y are in the app's enum but answered 404 \"Data belum tersedia untuk periode ini\" (2026-11-21), failing the whole call."
+   }
+  ],
+  "feature": "Broker Activity (what a broker bought/sold across stocks), main bundle usePrimus; also financial 1.2.2, and the Broker Transaction broker map in financial 1.2.4 (one call per selected broker)",
+  "response": "data{from, to, broker_code, broker_name, broker_activity_transaction{brokers_buy[{stock_code, broker_code, type BROKER_TYPE_*, date, value, lot, avg_price, freq, company_detail{icon_url, corpaction, notation}, nval_trend[{date, nval, nvol, nfreq}]}], brokers_sell[same; value and lot negative]}}. value/nval IDR, lot/nvol lots (inferred). nval_trend is [] unless net_val_period is sent."
+ }
+]

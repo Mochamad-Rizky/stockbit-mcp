@@ -129,7 +129,8 @@ export const marketTools: AnyToolDefinition[] = [
     title: 'Broker activity (what a broker traded)',
     summary:
       'For one broker code: the stocks it bought and sold most over a period, net or gross. Use it to ' +
-      'follow a broker across the market.',
+      'follow a broker across the market. With net_val_period, each stock also carries the broker\'s ' +
+      'daily net (nval_trend), as in the app\'s Broker Transaction view.',
     notes: `${LOTS} market_board takes MARKET_TYPE_* values.`,
   }),
   endpointTool({

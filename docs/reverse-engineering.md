@@ -45,6 +45,21 @@ author's own session.
     amend/cancel are order writes.
   - The AI screener (`POST /screener/rules/generate {prompt}`) writes to the server.
 
+## Remote updates after 2.9.0
+
+Remote modules change without an app update. `scripts/catalog-updates.json` holds changes to
+endpoints the catalog already documents, applied by the build after the notes.
+
+- 2026-11-21, `financial` 1.2.4: a **Broker Transaction** view (chunk 3567, a "broker map": pick
+  brokers, see the stocks they traded and the stocks they share). It adds no endpoint: one
+  `/order-trade/broker/activity` call per selected broker (query key `broker-map-activity`), plus
+  prices in groups of 100 symbols. The app now sends `net_val_period=NET_VAL_PERIOD_7D`, an enum
+  from `financial.order_trade.entity.v1.NetValPeriod` (7D, 1M, 3M, 6M, 1Y). Rows also carry
+  `broker_code`, `type`, `date`, `freq`, `company_detail` and `nval_trend[{date, nval, nvol,
+  nfreq}]`. Checked live the same day: without the parameter `nval_trend` is `[]`; 7D, 1M and 3M
+  give 7, 21 and 63 daily points ending at the last trading day, even with an older `from`/`to`;
+  6M and 1Y answer 404 "Data belum tersedia untuk periode ini".
+
 ## Realtime datafeed (used by `stockbit-mcp watch`)
 
 Read from the 2.9.0 bundle (`usePrimus-*.js`, protobuf-es `proto3.makeMessageType` definitions) and

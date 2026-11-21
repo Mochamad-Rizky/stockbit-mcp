@@ -80,6 +80,19 @@ describe('catalog requests', () => {
     expect(top.query).not.toHaveProperty('period');
   });
 
+  // The Broker Transaction view (financial 1.2.4) asks for the daily net trend this way; without
+  // net_val_period nval_trend comes back empty (live, 2026-11-21).
+  it('sends net_val_period for broker activity only when asked', () => {
+    const plain = buildRequest(endpoint('get_broker_activity'), { broker_code: ['XL'] });
+    expect(plain.query).not.toHaveProperty('net_val_period');
+
+    const trend = buildRequest(endpoint('get_broker_activity'), {
+      broker_code: ['XL'],
+      net_val_period: 'NET_VAL_PERIOD_7D',
+    });
+    expect(trend.query).toMatchObject({ broker_code: ['XL'], net_val_period: 'NET_VAL_PERIOD_7D' });
+  });
+
   it('sends the UNSPECIFIED preset with a date range where the endpoint has one', () => {
     const req = buildRequest(endpoint('get_foreign_flow_summary'), {
       symbols: ['BBCA'],

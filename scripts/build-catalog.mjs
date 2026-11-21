@@ -174,6 +174,19 @@ for (const e of additions) {
   endpoints.set(key, e);
 }
 
+// Changes the newer app made to endpoints already documented (see docs/reverse-engineering.md):
+// query parameters it added, and a replacement feature/response text where given.
+const updates = JSON.parse(readFileSync(new URL('./catalog-updates.json', import.meta.url), 'utf8'));
+for (const u of updates) {
+  const e = [...endpoints.values()].find((x) => x.id === u.id);
+  if (!e) throw new Error(`catalog-updates.json: unknown id ${u.id}`);
+  for (const q of u.query ?? []) {
+    if (!e.query.some((p) => p.name === q.name)) e.query.push(q);
+  }
+  if (u.feature) e.feature = u.feature;
+  if (u.response) e.response = u.response;
+}
+
 const list = [...endpoints.values()]
   .filter((e) => !PRIVATE_PREFIX.test(e.path))
   .sort((a, b) => a.group.localeCompare(b.group) || a.path.localeCompare(b.path) || a.method.localeCompare(b.method));
