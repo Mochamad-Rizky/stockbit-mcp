@@ -50,4 +50,28 @@ export function swingTimes(dateMs: number): number[] {
   return [s.close1 + 5, hm(15, 0), hm(16, 10)].map((m) => midnight + m * 60_000);
 }
 
+// The share of an average minute's value traded in this minute (1 = the day's average), measured on
+// the regular board of a full recorded day (2026-11-19): the open trades about 5x, the midday lull
+// half, the last 20 minutes about 2x. A flat baseline makes every stock look hot at 09:00.
+export function volumeProfileAt(nowMs: number): number {
+  const { day, minute } = local(nowMs);
+  const s = schedule(day);
+  if (!s) return 1;
+  if (minute >= s.open1 && minute < s.close1) {
+    const m = minute - s.open1;
+    if (m < 5) return 5;
+    if (m < 15) return 3;
+    if (m < 20) return 2;
+    if (m < 35) return 1.3;
+    return minute < hm(11, 0) ? 0.75 : 0.5;
+  }
+  if (minute >= s.open2 && minute < s.close2) {
+    const left = s.close2 - minute;
+    if (left <= 20) return 1.8;
+    if (left <= 50) return 1.4;
+    return minute - s.open2 < 30 ? 0.9 : 0.75;
+  }
+  return 1;
+}
+
 export const jakartaDate = (ms: number) => new Date(ms + JAKARTA_MS).toISOString().slice(0, 10);

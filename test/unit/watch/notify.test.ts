@@ -101,10 +101,30 @@ describe('Notifier gate', () => {
     expect(sent[1]!.split('\n').at(-1)).toBe('09:44:12');
   });
 
-  it('a changed action passes the cooldown', async () => {
+  it('a changed direction passes the cooldown', async () => {
     const { n } = setup();
     await n.send(alert());
-    expect(await n.send(alert({ signal: { ...alert().signal, action: 'TUNGGU' } }))).toBe(true);
+    expect(await n.send(alert({ signal: { ...alert().signal, action: 'HINDARI' } }))).toBe(true);
+  });
+
+  it('the same setup flipping between BELI and TUNGGU stays in the cooldown', async () => {
+    const { n } = setup();
+    await n.send(alert());
+    expect(await n.send(alert({ signal: { ...alert().signal, action: 'TUNGGU' } }))).toBe(false);
+    expect(await n.send(alert({ signal: { ...alert().signal, action: 'BELI' } }))).toBe(false);
+  });
+
+  it('one move is one notification: a day BELI right after a scalp BELI on the same stock stays in the cooldown', async () => {
+    const { n } = setup();
+    expect(await n.send(alert())).toBe(true);
+    expect(await n.send(alert({ signal: { ...alert().signal, style: 'day', setup: 'day_high_break' } }))).toBe(false);
+  });
+
+  it('a new setup with a new action passes (accumulation TUNGGU, then markup BELI)', async () => {
+    const { n } = setup();
+    const day = { ...alert().signal, style: 'day' as const };
+    expect(await n.send(alert({ signal: { ...day, setup: 'accumulation', action: 'TUNGGU' } }))).toBe(true);
+    expect(await n.send(alert({ signal: { ...day, setup: 'markup', action: 'BELI' } }))).toBe(true);
   });
 
   it('daily cap stops non-exit alerts but not exits', async () => {

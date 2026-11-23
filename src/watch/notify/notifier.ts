@@ -22,10 +22,16 @@ export interface NotifierOptions {
 }
 
 const JAKARTA_MS = 7 * 3_600_000;
+// Within the cooldown a new action is news only when its direction changes (buy → avoid) or it comes
+// from another setup (accumulation TUNGGU → markup BELI). The same setup flipping between BELI and
+// TUNGGU as the price wobbles around the VWAP-extension line is not.
+const BUY_SIDE = new Set(['BELI', 'TUNGGU']);
+const sameIdea = (a: { action: string; setup: string }, b: { action: string; setup: string }) =>
+  a.action === b.action || (a.setup === b.setup && BUY_SIDE.has(a.action) && BUY_SIDE.has(b.action));
 const dayOf = (ms: number) => new Date(ms + JAKARTA_MS).toISOString().slice(0, 10);
 
 export class Notifier {
-  private readonly last = new Map<string, { at: number; score: number; action: string }>();
+  private readonly last = new Map<string, { at: number; score: number; action: string; setup: string }>();
   private day = '';
   private count = 0;
   private readonly lastFailureLog = new Map<string, number>();
@@ -52,13 +58,14 @@ export class Notifier {
       this.day = today;
       this.count = 0;
     }
-    // Exits are keyed by their setup (stop, target, distribution) and never count toward the cap.
-    const key = exit ? `${a.signal.symbol}|exit|${a.signal.setup}` : `${a.signal.symbol}|${a.signal.style}`;
+    // Exits are keyed by their setup (stop, target, distribution) and never count toward the cap. Other
+    // alerts share one key per stock: a scalp and a day setup firing on the same move are one trade.
+    const key = exit ? `${a.signal.symbol}|exit|${a.signal.setup}` : a.signal.symbol;
     const prev = this.last.get(key);
     const { cooldownSec, rescoreJump, dailyCap } = this.o.cfg.alerts;
-    if (prev && now - prev.at < cooldownSec * 1000 && a.score < prev.score + rescoreJump && a.signal.action === prev.action) return false;
+    if (prev && now - prev.at < cooldownSec * 1000 && a.score < prev.score + rescoreJump && sameIdea(prev, a.signal)) return false;
     if (!exit && this.count >= dailyCap) return false;
-    this.last.set(key, { at: now, score: a.score, action: a.signal.action });
+    this.last.set(key, { at: now, score: a.score, action: a.signal.action, setup: a.signal.setup });
     if (!exit) this.count += 1;
 
     const text = { telegram: formatTelegram(a, now), macos: formatMacos(a) };

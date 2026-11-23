@@ -257,19 +257,30 @@ swing setups, plus warnings on stocks you hold. It never places orders.
 
 How it works:
 
-- The running trade of every stock (`*` on the datafeed) feeds per-stock windows: value against the
-  20-day average (RVOL), HAKA vs HAKI, big lots, range.
-- Every 30 s it keeps two short lists: the top 5 by momentum and the top 5 by quiet accumulation.
-  Those, plus your holdings, get the live order book, which shows walls, fake walls and thinning
-  offers.
+- The running trade of every stock (`*` on the datafeed) feeds per-stock windows: value against
+  the 20-day average (RVOL), HAKA vs HAKI, big lots, range. Only the regular market counts:
+  negotiated and cash-market trades and the 08:58 / 16:00 auction prints stay off the windows.
+- RVOL follows the intraday volume profile (the open trades about 5x an average minute, midday
+  about half), so the opening rush is not read as a spike.
+- Every 30 s it keeps three short lists: the top 5 by momentum, the top 5 by quiet accumulation and
+  the top 5 by momentum among liquid stocks (20-day average value ≥ Rp20 B), which thin stocks would
+  otherwise always outscore. Those, plus your holdings, get the live order book, which shows walls,
+  fake walls and thinning offers.
+- Liquid stocks have their RVOL counted 1.5x and their HAKA share 10 points higher (big caps trade
+  two-sided all day) and get +10 on setups with a price trigger; stocks under Rp1 B a day get −10.
 - Detectors fire on setups:
   - scalping: HAKA sweep, offer thinning, big-lot burst;
-  - day trading: RVOL spike, day-high break, accumulation, markup, distribution;
+  - day trading: RVOL spike, day-high break, accumulation, markup, distribution (distribution only
+    on watchlist stocks and stocks the bot flagged as a buy that day);
   - swing: bandar accumulation from daily bars, the broker summary and foreign flow, at the lunch
     break, 15:00 and 16:10;
   - exits on what you hold: stop broken, first target reached, distribution.
-- An alert goes out only above the style's score threshold, at most once per stock and style per 10
-  minutes, and at most 30 a day.
+- An alert goes out only above the style's score threshold, at most once per stock per 10 minutes
+  (a scalp and a day setup on the same move are one alert; a change to HINDARI or a new setup with a
+  new action still gets through), and at most 30 a day.
+- When the feed carries no trades for 90 s in a session, a notice says the bot is blind (another
+  open Stockbit app or web session can take the realtime connection), and another when it is back.
+  Run from a terminal, the log is also kept in `~/.stockbit-mcp/watch.log`.
 
 What an alert looks like (illustrative numbers):
 
@@ -317,8 +328,9 @@ you change, for example:
 { "risk": { "pct": { "scalp": 0.005 } }, "alerts": { "dailyCap": 15 }, "thresholds": { "day": 70 } }
 ```
 
-The keys are `telegram`, `macos`, `styles` (turn scalp/day/swing/exit on or off), `risk`, `alerts`,
-`thresholds`, `scanner`, `scalp`, `day`, `book` and `swing`. Their defaults are in
+The keys are `telegram`, `macos`, `styles` (turn scalp/day/swing/exit on or off), `risk`, `alerts`
+(`distributionScope: "all"` brings back distribution alerts on every stock), `thresholds`,
+`scanner`, `liquidity`, `feed`, `scalp`, `day`, `book` and `swing`. Their defaults are in
 `src/watch/config.ts`.
 
 ## Errors

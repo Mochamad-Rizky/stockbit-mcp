@@ -1,28 +1,32 @@
 import { tickDistance } from '../core/ticks.js';
+import { type Baseline, isLiquid, marketBaseline } from './baseline.js';
 import type { WatchConfig } from './config.js';
 import type { SymbolTape, Tape } from './market/tape.js';
 import type { Universe } from './universe.js';
 
 // Picks the stocks worth a close look from the whole-market tape: a momentum shortlist (buyers
-// pushing now) and an accumulation shortlist (heavy trading held in a narrow range, the quiet
-// collecting a momentum score never sees). Both get the order book subscribed.
+// pushing now), an accumulation shortlist (heavy trading held in a narrow range, the quiet
+// collecting a momentum score never sees) and a liquid shortlist (the best momentum among liquid
+// stocks, which thin stocks would otherwise always outscore). All get the order book subscribed.
 
 export interface Focus {
   momentum: string[];
   accumulation: string[];
+  liquid: string[];
 }
 
-type Scorer = (symbol: string, tape: SymbolTape, expectedPerMin: number, now: number) => number;
+type Scorer = (symbol: string, tape: SymbolTape, baseline: Baseline, now: number) => number;
 
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
 
 // 0-100. Terms, each capped at its weight: HAKA-value RVOL over 5 min (35), HAKA share (25), price
 // change in ticks (20), trades against the stock's own pace today (10), big buy lots (10). RVOL is
 // taken on buyer-initiated value: momentum here means buyers lifting offers.
-export function momentumScore(s: SymbolTape, expectedPerMin: number, now: number): number {
+export function momentumScore(s: SymbolTape, baseline: Baseline, now: number): number {
   const w = s.window(300, now);
-  if (w.trades === 0 || expectedPerMin <= 0) return 0;
-  const rvolBuy = w.buyValue / (5 * expectedPerMin);
+  const expected = baseline(300, now);
+  if (w.trades === 0 || expected <= 0) return 0;
+  const rvolBuy = w.buyValue / expected;
   const haka = s.hakaShare(300, now);
   const ticks = tickDistance(w.first, w.last);
   const day = s.day();
@@ -41,10 +45,11 @@ export function momentumScore(s: SymbolTape, expectedPerMin: number, now: number
 
 // 0-100, and 0 unless all hold over 15 min: RVOL ≥ accumRvolMin, range ≤ accumRangeTicks ticks,
 // HAKI share ≥ accumHakiMin, and the price not below where the window started.
-export function accumulationScore(s: SymbolTape, expectedPerMin: number, now: number, cfg: WatchConfig): number {
+export function accumulationScore(s: SymbolTape, baseline: Baseline, now: number, cfg: WatchConfig): number {
   const w = s.window(900, now);
-  if (w.trades === 0 || expectedPerMin <= 0) return 0;
-  const rvol = w.value / (15 * expectedPerMin);
+  const expected = baseline(900, now);
+  if (w.trades === 0 || expected <= 0) return 0;
+  const rvol = w.value / expected;
   const haki = 1 - s.hakaShare(900, now);
   const ok =
     rvol >= cfg.day.accumRvolMin &&
@@ -95,6 +100,7 @@ class Shortlist {
 export class Scanner {
   private readonly momentumList: Shortlist;
   private readonly accumulationList: Shortlist;
+  private readonly liquidList: Shortlist;
   private readonly scorers: { momentum: Scorer; accumulation: Scorer };
 
   constructor(
@@ -106,6 +112,7 @@ export class Scanner {
     const { size, enterMargin, minStaySec } = cfg.scanner;
     this.momentumList = new Shortlist(size, enterMargin, minStaySec * 1000);
     this.accumulationList = new Shortlist(size, enterMargin, minStaySec * 1000);
+    this.liquidList = new Shortlist(cfg.liquidity.shortlist, enterMargin, minStaySec * 1000);
     this.scorers = {
       momentum: scorers?.momentum ?? ((_, s, e, now) => momentumScore(s, e, now)),
       accumulation: scorers?.accumulation ?? ((_, s, e, now) => accumulationScore(s, e, now, cfg)),
@@ -115,15 +122,19 @@ export class Scanner {
   recompute(now: number): Focus {
     const mom = new Map<string, number>();
     const acc = new Map<string, number>();
+    const liq = new Map<string, number>();
     for (const symbol of this.tape.symbols()) {
       const s = this.tape.get(symbol)!;
-      const expected = this.universe.expectedPerMinute(symbol);
-      if (expected === undefined || s.window(300, now).value < this.cfg.alerts.minValue5m) continue;
-      mom.set(symbol, this.scorers.momentum(symbol, s, expected, now));
-      acc.set(symbol, this.scorers.accumulation(symbol, s, expected, now));
+      const baseline = marketBaseline(this.universe, this.cfg, symbol);
+      if (baseline === undefined || s.window(300, now).value < this.cfg.alerts.minValue5m) continue;
+      const m = this.scorers.momentum(symbol, s, baseline, now);
+      mom.set(symbol, m);
+      if (isLiquid(this.universe.get(symbol), this.cfg)) liq.set(symbol, m);
+      acc.set(symbol, this.scorers.accumulation(symbol, s, baseline, now));
     }
     const momentum = this.momentumList.update(mom, now, new Set());
     const accumulation = this.accumulationList.update(acc, now, new Set(momentum));
-    return { momentum, accumulation };
+    const liquid = this.liquidList.update(liq, now, new Set([...momentum, ...accumulation]));
+    return { momentum, accumulation, liquid };
   }
 }

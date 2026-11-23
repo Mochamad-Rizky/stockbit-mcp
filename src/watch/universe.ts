@@ -84,9 +84,10 @@ export class Universe {
     return this.learned.get(symbol);
   }
 
-  // For a stock without a 20-day average: its value over its first LEARN_MINUTES minutes.
-  learnBaseline(symbol: string, valueFirst15m: number): void {
-    if ((this.stocks.get(symbol)?.valueMa20 ?? 0) > 0 || valueFirst15m <= 0) return;
-    this.learned.set(symbol, valueFirst15m / LEARN_MINUTES);
+  // For a stock without a 20-day average: its value over its first LEARN_MINUTES minutes, divided by
+  // what those minutes weigh in the intraday profile (average-minute units; LEARN_MINUTES if flat).
+  learnBaseline(symbol: string, valueFirst15m: number, minutes = LEARN_MINUTES): void {
+    if ((this.stocks.get(symbol)?.valueMa20 ?? 0) > 0 || valueFirst15m <= 0 || minutes <= 0) return;
+    this.learned.set(symbol, valueFirst15m / minutes);
   }
 }

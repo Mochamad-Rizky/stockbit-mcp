@@ -1,7 +1,9 @@
+import { flatBaseline } from '../../../src/watch/baseline.js';
 import { parseWatchConfig } from '../../../src/watch/config.js';
 import { detectIntraday, isDistribution, type IntradayInput } from '../../../src/watch/detect/intraday.js';
 import { SymbolBook } from '../../../src/watch/market/book.js';
 import { SymbolTape } from '../../../src/watch/market/tape.js';
+import { riskComponents, scoreOf } from '../../../src/watch/score.js';
 import type { BookSide, Signal } from '../../../src/watch/types.js';
 import { info, T0, trade } from './tape-helpers.js';
 
@@ -23,7 +25,7 @@ function bidsBook(levels: [number, number][]): BookSide {
   return { symbol: 'X', side: 'bid', time: 0, total: 0, levels: levels.map(([price, shares]) => ({ price, orders: 1, shares })) };
 }
 const input = (tape: SymbolTape, extra: Partial<IntradayInput> = {}): IntradayInput => ({
-  symbol: 'X', tape, info: info('X', E * 320), expectedPerMin: E, cfg, ...extra,
+  symbol: 'X', tape, info: info('X', E * 320), baseline: flatBaseline(E), cfg, ...extra,
 });
 const setups = (s: Signal[]) => s.map((x) => x.setup).sort();
 
@@ -82,6 +84,35 @@ describe('day detectors', () => {
     const sig = detectIntraday(input(t), NOW).find((s) => s.setup === 'rvol_spike');
     expect(sig).toMatchObject({ style: 'day', title: 'Volume meledak' });
     expect(sig!.components.find((c) => c.label === 'RVOL')?.points).toBe(25);
+  });
+
+  it('a textbook rvol spike can reach the day threshold', () => {
+    // RVOL ≥ 8x, HAKA ≥ 90% over 15 min, price up, a bid wall holding just below; ARA far away.
+    const t = new SymbolTape();
+    base(t, 1000, NOW);
+    for (let i = 0; i < 50; i += 1) t.add(trade('X', 1000 + 5 * Math.floor(i / 10), 400, 'buy', NOW - 290_000 + i * 5_000));
+    const b = new SymbolBook(cfg.book);
+    b.apply(bidsBook([[1015, 900_000], [1010, 10_000], [1005, 10_000], [1000, 10_000], [995, 10_000], [990, 10_000]]), NOW - 60_000);
+    const sig = detectIntraday(input(t, { book: b }), NOW).find((s) => s.setup === 'rvol_spike')!;
+    expect(sig.components.find((c) => c.label === 'bid')?.points).toBe(12);
+    const score = scoreOf([...sig.components, ...riskComponents(info('X', E * 320), 0.2, b)]);
+    expect(score).toBeGreaterThanOrEqual(cfg.thresholds.day);
+  });
+
+  it('a liquid stock counts its HAKA share with the liquid shift (big caps trade two-sided)', () => {
+    // 15-min HAKA ≈ 55%: short of the 60% a thin stock needs, enough for a liquid one (+10 points).
+    const mkTape = () => {
+      const t = new SymbolTape();
+      base(t, 1000, NOW);
+      for (let i = 0; i < 60; i += 1) t.add(trade('X', 1000 + 5 * Math.floor(i / 12), 400, i % 20 < 11 ? 'buy' : 'sell', NOW - 295_000 + i * 4_900));
+      return t;
+    };
+    const thin = detectIntraday(input(mkTape()), NOW);
+    expect(setups(thin)).not.toContain('rvol_spike');
+    const liquid = detectIntraday(input(mkTape(), { info: info('X', 50_000_000_000) }), NOW).find((x) => x.setup === 'rvol_spike');
+    expect(liquid).toBeDefined();
+    expect(liquid!.components.find((c) => c.label === 'HAKA')?.points).toBe(10);
+    expect(liquid!.facts.some((f) => /HAKA 15 menit 5\d%/.test(f))).toBe(true);
   });
 
   it('no rvol spike when sellers dominate', () => {
@@ -173,6 +204,6 @@ describe('day detectors', () => {
   it('stays quiet below the 5-minute value floor', () => {
     const t = new SymbolTape();
     for (let i = 0; i < 20; i += 1) t.add(trade('X', 100, 10, 'buy', NOW - 100_000 + i * 5_000));
-    expect(detectIntraday(input(t, { expectedPerMin: 1000 }), NOW)).toEqual([]);
+    expect(detectIntraday(input(t, { baseline: flatBaseline(1000) }), NOW)).toEqual([]);
   });
 });

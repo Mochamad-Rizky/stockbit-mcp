@@ -83,7 +83,7 @@ export class DatafeedClient {
       void this.onOpen(ws);
     };
     ws.onmessage = (e: MessageEvent) => this.onMessage(ws, e.data as ArrayBuffer);
-    ws.onclose = () => this.onClose(ws);
+    ws.onclose = (e: CloseEvent) => this.onClose(ws, e);
     ws.onerror = () => {
       this.o.logger.debug('datafeed socket error');
     };
@@ -152,10 +152,10 @@ export class DatafeedClient {
     this.o.onEvent(ev, raw, this.now());
   }
 
-  private onClose(ws: WebSocket): void {
+  private onClose(ws: WebSocket, e?: { code?: number; reason?: string }): void {
     if (ws !== this.ws) return;
     this.detach(ws);
-    this.scheduleReconnect();
+    this.scheduleReconnect({ ...(e?.code === undefined ? {} : { code: e.code }), ...(e?.reason ? { reason: e.reason } : {}) });
   }
 
   // Forget a socket without waiting for its close handshake, then reconnect.
@@ -180,13 +180,17 @@ export class DatafeedClient {
     this.ws = undefined;
   }
 
-  private scheduleReconnect(): void {
+  // `close` says why the server closed the socket (absent when the bot dropped it itself). A socket
+  // that keeps closing after a few seconds may be another session of the same account (the Stockbit
+  // app or web) taking the realtime connection over; the code and uptime in the log tell.
+  private scheduleReconnect(close: { code?: number; reason?: string } = {}): void {
     if (this.stopped) return;
-    if (this.openedAt && this.now() - this.openedAt >= STABLE_MS) this.attempt = 0;
+    const upMs = this.openedAt ? this.now() - this.openedAt : 0;
+    if (this.openedAt && upMs >= STABLE_MS) this.attempt = 0;
     this.openedAt = 0;
     const delay = this.authBroken ? AUTH_BACKOFF_MS : Math.min(MAX_BACKOFF_MS, 1000 * 2 ** this.attempt);
     this.attempt += 1;
-    this.o.logger.info('datafeed closed, reconnecting', { inMs: delay });
+    this.o.logger.info('datafeed closed, reconnecting', { inMs: delay, upMs, ...close });
     clearTimeout(this.reconnectTimer);
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }

@@ -7,7 +7,7 @@ import { phaseAt, swingTimes } from '../../../src/watch/clock.js';
 import { parseWatchConfig } from '../../../src/watch/config.js';
 import { Notifier, type Sender } from '../../../src/watch/notify/notifier.js';
 import { Recorder } from '../../../src/watch/recorder.js';
-import { AUTH_NOTICE, memoSuccess, Pipeline, replay, WatchRunner } from '../../../src/watch/run.js';
+import { AUTH_NOTICE, feedBackNotice, feedDownNotice, memoSuccess, Pipeline, replay, WatchRunner } from '../../../src/watch/run.js';
 import type { Alert, Channels } from '../../../src/watch/types.js';
 import { Universe } from '../../../src/watch/universe.js';
 import { fakeHttp } from './fake-http.js';
@@ -104,6 +104,114 @@ describe('replay and pipeline', () => {
   });
 });
 
+describe('pipeline market data', () => {
+  const mk = (universe: Universe, extra: Partial<ConstructorParameters<typeof Pipeline>[0]> = {}) =>
+    new Pipeline({
+      cfg, http: fakeHttp(universeRoutes), universe, logger: createLogger('silent'),
+      notifier: new Notifier({ cfg, senders: [], logger: createLogger('silent') }), ...extra,
+    });
+  const t = (symbol: string, price: number, shares: number, side: 'buy' | 'sell', ms: number, no: number, board = 1) =>
+    ({ symbol, price, shares, value: price * shares, side, time: ms, tradeNo: no, board });
+
+  it('keeps negotiated (board 3) and cash-market (board 2) trades off the tape', () => {
+    const p = mk(Universe.of([info('SWEP', 3_200_000_000)]));
+    p.onEvent({ kind: 'trades', trades: [t('SWEP', 900, 50_000_000, 'buy', T, 1, 3), t('SWEP', 250, 1000, 'buy', T, 2, 2)] }, T);
+    expect(p.tape.get('SWEP')).toBeUndefined();
+    p.onEvent({ kind: 'trades', trades: [t('SWEP', 274, 1000, 'buy', T + 1000, 3)] }, T + 1000);
+    expect(p.tape.get('SWEP')!.day()).toMatchObject({ high: 274, trades: 1 });
+  });
+
+  it('keeps the pre-opening and closing auction prints off the tape', () => {
+    const p = mk(Universe.of([info('SWEP', 3_200_000_000)]));
+    const preopen = J('2026-11-19T08:58:30');
+    const close = J('2026-11-19T16:00:00');
+    p.onEvent({ kind: 'trades', trades: [{ ...t('SWEP', 270, 900_000, 'buy', preopen, 1), side: 'none' as const }] }, preopen);
+    expect(p.tape.get('SWEP')).toBeUndefined();
+    const open = J('2026-11-19T09:00:01');
+    p.onEvent({ kind: 'trades', trades: [t('SWEP', 272, 1000, 'buy', open, 2)] }, open);
+    p.onEvent({ kind: 'trades', trades: [{ ...t('SWEP', 280, 900_000, 'buy', close, 3), side: 'none' as const }] }, close);
+    expect(p.tape.get('SWEP')!.day()).toMatchObject({ open: 272, high: 272, trades: 1 });
+  });
+
+  it('subscribes the order book of the liquid shortlist too', () => {
+    const seen: Channels[] = [];
+    const p = mk(Universe.of([info('GRNG', 3_200_000_000), info('BIGC', 50_000_000_000)]), {
+      cfg: { ...cfg, scanner: { ...cfg.scanner, size: 1 } }, onChannels: (c) => seen.push(c),
+    });
+    for (let i = 0; i < 20; i += 1) {
+      p.onEvent({ kind: 'trades', trades: [t('GRNG', 274 + 2 * Math.floor(i / 4), 300_000, 'buy', T + i * 1000, i)] }, T + i * 1000);
+      p.onEvent({ kind: 'trades', trades: [t('BIGC', 5000, 20_000, 'buy', T + i * 1000, 100 + i)] }, T + i * 1000);
+    }
+    p.tick(T + 20_000);
+    expect(p.focus).toMatchObject({ momentum: ['GRNG'], liquid: ['BIGC'] });
+    expect(seen.at(-1)!.orderBook.sort()).toEqual(['BIGC', 'GRNG']);
+  });
+
+  it('scores liquid stocks with the likuid component', async () => {
+    const { alerts, sender } = collect();
+    const p = mk(Universe.of([info('SWEP', 50_000_000_000)]), {
+      notifier: new Notifier({ cfg, senders: [sender], logger: createLogger('silent') }),
+      holdings: [{ symbol: 'SWEP', lots: 10, avgPrice: 300 }],
+    });
+    for (let i = 0, price = 300; price >= 270; i += 1, price -= 2) {
+      p.onEvent({ kind: 'trades', trades: [t('SWEP', price, 1000, 'sell', T + i * 6000, i)] }, T + i * 6000);
+      await p.idle();
+    }
+    expect(alerts[0]!.signal.components).toContainEqual({ label: 'likuid', points: 10 });
+  });
+
+  describe('distribution alerts', () => {
+    // NTBK runs from its open, then big HAKI lots hit a held price for 15 minutes.
+    const feedDistribution = async (p: Pipeline) => {
+      const open = J('2026-11-19T09:00:30');
+      p.onEvent({ kind: 'trades', trades: [t('NTBK', 800, 5_000, 'buy', open, 1)] }, open);
+      const from = J('2026-11-19T10:00:00');
+      for (let i = 0; i < 60; i += 1) {
+        const ms = from + i * 15_000;
+        const big = i % 10 !== 0;
+        p.onEvent({ kind: 'trades', trades: [t('NTBK', 815 + (i % 2) * 5, big ? 400_000 : 3_000, big ? 'sell' : 'buy', ms, 10 + i)] }, ms);
+        await p.idle();
+      }
+    };
+    const withNotifier = (extra: Partial<ConstructorParameters<typeof Pipeline>[0]> = {}, c = cfg) => {
+      const { alerts, sender } = collect();
+      const p = mk(Universe.of([info('NTBK', 2_600_000_000)]), {
+        cfg: c, notifier: new Notifier({ cfg: c, senders: [sender], logger: createLogger('silent') }), ...extra,
+      });
+      return { p, alerts };
+    };
+
+    it('are not sent for a stock the user has no stake in', async () => {
+      const { p, alerts } = withNotifier();
+      await feedDistribution(p);
+      expect(alerts.filter((a) => a.signal.setup === 'distribution')).toEqual([]);
+    });
+
+    it('are sent for a watchlist stock', async () => {
+      const { p, alerts } = withNotifier({ watchlist: ['NTBK'] });
+      await feedDistribution(p);
+      expect(alerts.some((a) => a.signal.setup === 'distribution' && a.signal.action === 'HINDARI')).toBe(true);
+    });
+
+    it('are sent for every stock when distributionScope is all', async () => {
+      const all = { ...cfg, alerts: { ...cfg.alerts, distributionScope: 'all' as const } };
+      const { p, alerts } = withNotifier({}, all);
+      await feedDistribution(p);
+      expect(alerts.some((a) => a.signal.setup === 'distribution')).toBe(true);
+    });
+  });
+
+  it('learns a new listing baseline in average-minute units of the profile', () => {
+    const universe = Universe.of([info('NEWX', 0)]);
+    const p = mk(universe);
+    const open = J('2026-11-19T09:00:00');
+    // 15 minutes from the open: 5 min at 5x, 10 min at 3x = 55 average minutes.
+    for (let i = 0; i <= 15 * 6; i += 1) p.onEvent({ kind: 'trades', trades: [t('NEWX', 100, 5_500, 'buy', open + i * 10_000, i)] }, open + i * 10_000);
+    const value = p.tape.get('NEWX')!.window(15 * 60, open + 15 * 60_000).value;
+    expect(universe.expectedPerMinute('NEWX')).toBeCloseTo(value / 55, -3);
+  });
+});
+
 describe('memoSuccess', () => {
   it('caches successful reads only', async () => {
     let calls = 0;
@@ -190,7 +298,7 @@ describe('WatchRunner', () => {
   });
 });
 
-import { launchAgentPlist } from '../../../src/cli/watch.js';
+import { launchAgentPlist, watchLogger } from '../../../src/cli/watch.js';
 
 describe('WatchRunner resilience', () => {
   const base = { ...universeRoutes, '/portfolio/v2/list': { data: { results: [] } }, '/watchlist': { data: [] } };
@@ -253,6 +361,55 @@ describe('WatchRunner resilience', () => {
     expect(texts).toEqual([AUTH_NOTICE]);
   });
 
+  describe('feed watchdog', () => {
+    const trades = (at: number) => ({ kind: 'trades' as const, trades: [{ symbol: 'SWEP', price: 274, shares: 100, value: 27_400, side: 'buy' as const, time: at, tradeNo: at, board: 1 }] });
+    const raw = new Uint8Array([0]);
+    const setup = (start: string) => {
+      const texts: string[] = [];
+      const notifier = new Notifier({ cfg, senders: [{ name: 'c', send: async () => {}, text: async (t) => { texts.push(t); } }], logger: createLogger('silent') });
+      const clock = { now: J(start) };
+      const runner = mk(fakeHttp(base), { notifier, now: () => clock.now });
+      return { texts, clock, runner };
+    };
+
+    it('tells the user once when no trades arrive in a session, and again when they return', async () => {
+      const { texts, clock, runner } = setup('2026-11-18T09:10:00');
+      await runner.start();
+      runner.onFeed(trades(clock.now), raw, clock.now);
+      clock.now += 60_000;
+      runner.applyPhase(clock.now);
+      expect(texts).toEqual([]);
+      clock.now += 60_000; // 120 s without trades ≥ 90 s
+      runner.applyPhase(clock.now);
+      clock.now += 60_000;
+      runner.applyPhase(clock.now);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(texts).toEqual([feedDownNotice(J('2026-11-18T09:10:00'))]);
+      runner.onFeed(trades(clock.now), raw, clock.now);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(texts).toEqual([feedDownNotice(J('2026-11-18T09:10:00')), feedBackNotice(3)]);
+      await runner.stop();
+    });
+
+    it('counts from the session start, and says nothing during the lunch break', async () => {
+      const { texts, clock, runner } = setup('2026-11-18T12:05:00');
+      await runner.start();
+      clock.now = J('2026-11-18T13:20:00');
+      runner.applyPhase(clock.now);
+      clock.now = J('2026-11-18T13:31:00'); // the bot sees session 2 begin
+      runner.applyPhase(clock.now);
+      clock.now = J('2026-11-18T13:32:00');
+      runner.applyPhase(clock.now);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(texts).toEqual([]);
+      clock.now = J('2026-11-18T13:33:00');
+      runner.applyPhase(clock.now);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(texts).toEqual([feedDownNotice(J('2026-11-18T13:31:00'))]);
+      await runner.stop();
+    });
+  });
+
   it('waits for the 16:10 swing scan before ending the day', async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => { release = r; });
@@ -284,6 +441,29 @@ describe('watch command helpers', () => {
     expect(xml.match(/<key>Weekday<\/key><integer>(\d)<\/integer>/g)).toHaveLength(5);
     expect(xml).toContain('<key>Hour</key><integer>8</integer><key>Minute</key><integer>40</integer>');
     expect(xml).toContain('<string>/Users/x/.stockbit-mcp/watch.log</string>');
+  });
+
+  it('a bot run from a terminal also keeps its log in watch.log', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'home-'));
+    const err: string[] = [];
+    const { logger, close } = watchLogger('info', home, true, (l) => err.push(l));
+    logger.info('datafeed closed, reconnecting', { code: 1006 });
+    logger.debug('not at info');
+    await close();
+    const lines = readFileSync(join(home, 'watch.log'), 'utf8').trim().split('\n');
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!)).toMatchObject({ level: 'info', message: 'datafeed closed, reconnecting', code: 1006 });
+    expect(err).toEqual([lines[0]]);
+  });
+
+  it('under launchd (stderr already goes to watch.log) the log is not written twice', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'home-'));
+    const err: string[] = [];
+    const { logger, close } = watchLogger('info', home, false, (l) => err.push(l));
+    logger.info('hello');
+    await close();
+    expect(existsSync(join(home, 'watch.log'))).toBe(false);
+    expect(err).toHaveLength(1);
   });
 
   it('ends the day after the last swing scan, not at the close', async () => {

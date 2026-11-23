@@ -24,7 +24,15 @@ export const WatchConfigSchema = z.object({
     })
     .prefault({}),
   alerts: z
-    .object({ cooldownSec: count.default(600), rescoreJump: count.default(15), dailyCap: count.default(30), minValue5m: count.default(50_000_000) })
+    .object({
+      cooldownSec: count.default(600),
+      rescoreJump: count.default(15),
+      dailyCap: count.default(30),
+      minValue5m: count.default(50_000_000),
+      // 'relevant': distribution (HINDARI) only on watchlist stocks and stocks the bot flagged as a buy
+      // today (holdings get their own exit alerts); 'all': on any stock.
+      distributionScope: z.enum(['relevant', 'all']).default('relevant'),
+    })
     .prefault({}),
   thresholds: z.object({ scalp: count.default(70), day: count.default(65), swing: count.default(60) }).prefault({}),
   scanner: z
@@ -57,6 +65,22 @@ export const WatchConfigSchema = z.object({
   book: z
     .object({ wallFactor: positive.default(5), wallPersistSec: count.default(20), accumWallPersistSec: count.default(60) })
     .prefault({}),
+  // Liquid stocks (20-day average value ≥ liquidMin) get their own shortlist, so the order book and
+  // scalp setups reach them even when gorengan fill the momentum top 5. Their RVOL counts rvolScale
+  // times and their HAKA share hakaShift higher: big caps trade two-sided all day, so 2x and 65%
+  // there move more money than 3x and 75% on a thin stock. Stocks under thinMax lose points: a 5%
+  // share of their tape buys only a handful of lots.
+  liquidity: z
+    .object({
+      liquidMin: positive.default(20_000_000_000),
+      thinMax: z.number().min(0).default(1_000_000_000),
+      rvolScale: positive.default(1.5),
+      hakaShift: share.default(0.1),
+      shortlist: count.default(5),
+    })
+    .prefault({}),
+  // The bot is blind while the feed carries no trades in a session: tell the user after staleSec.
+  feed: z.object({ staleSec: positive.default(90) }).prefault({}),
   swing: z.object({ maxSymbols: count.default(60), topByTape: count.default(30), minGapMs: count.default(1500) }).prefault({}),
 });
 

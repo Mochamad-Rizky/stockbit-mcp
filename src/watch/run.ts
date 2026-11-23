@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import type { AuthService } from '../core/auth.js';
 import { StockbitMcpError } from '../core/errors.js';
 import type { Logger } from '../core/logger.js';
+import { marketBaseline, profileMinutes } from './baseline.js';
 import { jakartaDate, phaseAt, swingTimes, type Phase } from './clock.js';
 import type { WatchConfig } from './config.js';
 import { detectExit, holdingPlan, type HoldingLevels } from './detect/exit.js';
@@ -16,8 +17,8 @@ import { makePlan } from './plan.js';
 import { Recorder, readRecording } from './recorder.js';
 import { getAraArb, getBandar, getDailyBars, getForeignNet, getPortfolio, getWatchlistSymbols, type Holding, type Http } from './rest.js';
 import { type Focus, Scanner } from './scanner.js';
-import { passes, riskComponents, scoreOf } from './score.js';
-import type { Alert, Channels, FeedEvent, LivePrice, PlanRefs, Signal } from './types.js';
+import { liquidityComponents, passes, riskComponents, scoreOf } from './score.js';
+import type { Alert, Channels, FeedEvent, LivePrice, PlanRefs, Signal, Trade } from './types.js';
 import { LEARN_MINUTES, type StockInfo, Universe } from './universe.js';
 
 // Wires the feed to the tape, books, scanner, detectors, scorer, planner and notifier. Pipeline is
@@ -25,12 +26,27 @@ import { LEARN_MINUTES, type StockInfo, Universe } from './universe.js';
 // recorder.
 
 const EVAL_EVERY_MS = 5_000;
+// The running trade carries every board: 2 is the cash market and 3 the negotiated market, whose
+// crosses (trillions of rupiah at any price) are not the order book's buying and selling. The
+// pre-opening (08:58) and closing (16:00) auction prints are a day's worth of orders matched at once:
+// counted in a 5-minute window they would make every stock look hot at 09:00.
+const OFF_MARKET_BOARDS = new Set([2, 3]);
+const SESSIONS: Phase[] = ['session1', 'session2'];
+const onMarket = (t: Trade) => !OFF_MARKET_BOARDS.has(t.board) && SESSIONS.includes(phaseAt(t.time));
 // The best ARA bonus a risk check can add, used to skip REST reads for signals that cannot pass.
 const MAX_ARA_BONUS = 5;
 export const AUTH_NOTICE =
   'Sesi Stockbit kedaluwarsa dan tidak bisa diperpanjang: jalankan stockbit-mcp login, lalu jalankan ulang stockbit-mcp watch.';
 export const TRADING_NOTICE =
   'Sesi trading belum aktif: jalankan stockbit-mcp login --trading supaya lot dan peringatan portofolio jalan.';
+
+const hhmm = (ms: number) => new Date(ms + 7 * 3_600_000).toISOString().slice(11, 16);
+export const feedDownNotice = (since: number) =>
+  `⚠️ Tidak ada transaksi dari feed realtime Stockbit sejak ${hhmm(since)} (atau hari ini libur bursa): bot tidak melihat ` +
+  'pasar dan tidak bisa memberi sinyal. Kalau app atau web Stockbit sedang terbuka, coba tutup dulu; koneksinya bisa saling ' +
+  'rebut dengan bot.';
+export const feedBackNotice = (minutes: number) =>
+  `✅ Feed realtime tersambung lagi setelah putus ${minutes} menit. Pergerakan selama putus tidak terlihat oleh bot.`;
 
 export interface PipelineDeps {
   cfg: WatchConfig;
@@ -67,7 +83,7 @@ export class Pipeline {
   readonly tape = new Tape();
   readonly books: Books;
   readonly sent: Alert[] = [];
-  focus: Focus = { momentum: [], accumulation: [] };
+  focus: Focus = { momentum: [], accumulation: [], liquid: [] };
   holdings: Holding[];
   cash: number | undefined;
   watchlist: string[];
@@ -95,8 +111,9 @@ export class Pipeline {
   onEvent(ev: FeedEvent, at: number): void {
     if (at - this.lastTick >= this.d.cfg.scanner.recomputeSec * 1000) this.tick(at);
     if (ev.kind === 'trades') {
-      this.tape.add(ev.trades);
-      for (const symbol of new Set(ev.trades.map((t) => t.symbol))) {
+      const trades = ev.trades.filter(onMarket);
+      this.tape.add(trades);
+      for (const symbol of new Set(trades.map((t) => t.symbol))) {
         this.learn(symbol, at);
         this.evaluateSoon(symbol, at);
       }
@@ -112,7 +129,9 @@ export class Pipeline {
   tick(now: number): void {
     this.lastTick = now;
     this.focus = this.scanner.recompute(now);
-    const symbols = [...new Set([...this.focus.momentum, ...this.focus.accumulation, ...this.holdings.map((h) => h.symbol)])];
+    const symbols = [
+      ...new Set([...this.focus.momentum, ...this.focus.accumulation, ...this.focus.liquid, ...this.holdings.map((h) => h.symbol)]),
+    ];
     const channels: Channels = { runningTradeBatch: ['*'], orderBook: symbols, livePrice: symbols };
     const key = JSON.stringify(channels);
     if (key !== this.channelsKey) {
@@ -151,7 +170,9 @@ export class Pipeline {
   private learn(symbol: string, at: number): void {
     if (this.d.universe.expectedPerMinute(symbol) !== undefined) return;
     const s = this.tape.get(symbol);
-    if (s && at - s.firstTime >= LEARN_MINUTES * 60_000) this.d.universe.learnBaseline(symbol, s.window(LEARN_MINUTES * 60, at).value);
+    if (s && at - s.firstTime >= LEARN_MINUTES * 60_000) {
+      this.d.universe.learnBaseline(symbol, s.window(LEARN_MINUTES * 60, at).value, profileMinutes(LEARN_MINUTES * 60, at));
+    }
   }
 
   private evaluateSoon(symbol: string, at: number): void {
@@ -167,14 +188,14 @@ export class Pipeline {
 
   private async evaluate(symbol: string, at: number): Promise<void> {
     const info = this.d.universe.get(symbol);
-    const expected = this.d.universe.expectedPerMinute(symbol);
+    const baseline = marketBaseline(this.d.universe, this.d.cfg, symbol);
     const tape = this.tape.get(symbol);
-    if (!info || expected === undefined || !tape) return;
+    if (!info || baseline === undefined || !tape) return;
     const book = this.books.get(symbol);
     const acc = this.accumulated.get(symbol);
     let signals = detectIntraday(
       {
-        symbol, tape, info, expectedPerMin: expected, cfg: this.d.cfg,
+        symbol, tape, info, baseline, cfg: this.d.cfg,
         ...(book ? { book } : {}),
         ...(acc ? { accumulatedAt: acc.at, accumulationTop: acc.top } : {}),
       },
@@ -182,6 +203,9 @@ export class Pipeline {
     );
     // Scalp setups need the order book, which only focus stocks have.
     if (!book) signals = signals.filter((s) => s.style !== 'scalp');
+    if (this.d.cfg.alerts.distributionScope === 'relevant' && !this.hasStake(symbol)) {
+      signals = signals.filter((s) => s.setup !== 'distribution');
+    }
     if (signals.some((s) => s.setup === 'accumulation')) this.accumulated.set(symbol, { at, top: tape.window(900, at).high });
     const holding = this.holdings.find((h) => h.symbol === symbol);
     if (holding && this.d.cfg.styles.exit) {
@@ -201,15 +225,24 @@ export class Pipeline {
     for (const s of signals) await this.emit(s, info, book, value5m);
   }
 
+  // "Avoid this stock" helps only on a stock the user may buy or hold: a watchlist stock, one the bot
+  // flagged as a buy today, or a holding when exit alerts (which cover distribution) are off.
+  private hasStake(symbol: string): boolean {
+    if (this.watchlist.includes(symbol)) return true;
+    if (!this.d.cfg.styles.exit && this.holdings.some((h) => h.symbol === symbol)) return true;
+    return this.sent.some((a) => a.signal.symbol === symbol && (a.signal.action === 'BELI' || a.signal.action === 'TUNGGU'));
+  }
+
   private readonly quote = memoSuccess<string, Quote>((symbol) => getAraArb(this.d.http, symbol), {});
 
   private async emit(sig: Signal, info: StockInfo, book: SymbolBook | undefined, value5m: number | undefined): Promise<void> {
     const cfg = this.d.cfg;
-    if (!passes(sig.style, scoreOf([...sig.components, ...riskComponents(info, undefined, book)]) + MAX_ARA_BONUS, cfg)) return;
+    const liquidity = liquidityComponents(info, cfg, sig.setup);
+    if (!passes(sig.style, scoreOf([...sig.components, ...liquidity, ...riskComponents(info, undefined, book)]) + MAX_ARA_BONUS, cfg)) return;
     const q = await this.quote(sig.symbol);
     const last = sig.refs.last;
     const toAraPct = q.ara !== undefined && last > 0 ? (q.ara - last) / last : undefined;
-    const components = [...sig.components, ...riskComponents(info, toAraPct, book)];
+    const components = [...sig.components, ...liquidity, ...riskComponents(info, toAraPct, book)];
     const score = scoreOf(components);
     if (!passes(sig.style, score, cfg)) return;
     const prev = q.prev ?? this.prices.get(sig.symbol)?.prev;
@@ -296,6 +329,10 @@ export class WatchRunner {
   private dayEnded = '';
   private authNoticeDay = '';
   private swingRun: Promise<void> | undefined;
+  // Feed watchdog: when the last trade arrived (or the session began), and since when the feed has
+  // been silent after the user was told.
+  private lastTradeAt = 0;
+  private outageSince: number | undefined;
   private readonly now: () => number;
 
   constructor(private readonly d: RunnerDeps) {
@@ -384,10 +421,28 @@ export class WatchRunner {
     this.recorder = undefined;
   }
 
-  private onFeed(ev: FeedEvent, raw: Uint8Array, at: number): void {
+  onFeed(ev: FeedEvent, raw: Uint8Array, at: number): void {
     this.recorder?.write(raw, at);
-    if (ev.kind === 'trades') this.trades += ev.trades.length;
+    if (ev.kind === 'trades') {
+      this.trades += ev.trades.length;
+      this.lastTradeAt = at;
+      if (this.outageSince !== undefined) {
+        const minutes = Math.max(1, Math.round((at - this.outageSince) / 60_000));
+        this.outageSince = undefined;
+        void this.d.notifier.notice(feedBackNotice(minutes));
+      }
+    }
     this.pipeline?.onEvent(ev, at);
+  }
+
+  // In a session the whole market trades every second: a silent feed means the bot is blind.
+  private checkFeed(now: number, phase: Phase, was: Phase | undefined): void {
+    if (!SESSIONS.includes(phase)) return;
+    if (phase !== was) this.lastTradeAt = Math.max(this.lastTradeAt, now);
+    if (this.outageSince !== undefined || now - this.lastTradeAt < this.d.cfg.feed.staleSec * 1000) return;
+    this.outageSince = this.lastTradeAt;
+    this.d.logger.warn('datafeed silent', { since: new Date(this.lastTradeAt).toISOString() });
+    void this.d.notifier.notice(feedDownNotice(this.lastTradeAt));
   }
 
   private async checkTradingSession(ok: boolean): Promise<void> {
@@ -404,6 +459,7 @@ export class WatchRunner {
     if (ACTIVE.includes(phase)) this.feed?.start();
     else this.feed?.stop();
     if (phase === 'preopen' && was !== undefined && was !== 'preopen') void this.preopen();
+    this.checkFeed(now, phase, was);
     const times = swingTimes(now);
     for (const t of times) {
       if (now >= t && now - t < 10 * 60_000 && !this.swingDone.has(t) && this.pipeline) {
@@ -429,7 +485,7 @@ export class WatchRunner {
     const p = this.pipeline;
     this.d.logger.info('watch status', {
       phase: this.phase, connected: this.feed?.connected ?? false, tradesPerSec: Math.round(this.trades / 60),
-      momentum: p?.focus.momentum ?? [], accumulation: p?.focus.accumulation ?? [],
+      momentum: p?.focus.momentum ?? [], accumulation: p?.focus.accumulation ?? [], liquid: p?.focus.liquid ?? [],
     });
     this.trades = 0;
   }

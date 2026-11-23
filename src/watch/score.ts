@@ -1,6 +1,7 @@
 import type { WatchConfig } from './config.js';
 import type { SymbolBook } from './market/book.js';
-import type { ScoreComponent, Style } from './types.js';
+import type { ScoreComponent, Setup, Style } from './types.js';
+import { isLiquid } from './baseline.js';
 import type { StockInfo } from './universe.js';
 
 // The point values behind every alert score, in one place. Setup points come from the detectors;
@@ -32,6 +33,9 @@ export const POINTS = {
   foreignBuy: 5,
   bigLots: 15,
   dayHigh: 10,
+  rvolSpike: 10,
+  liquid: 10,
+  thin: -10,
   accumulation: 30,
   markup: 20,
   distribution: 40,
@@ -54,6 +58,17 @@ export function riskComponents(info: StockInfo, toAraPct: number | undefined, bo
     ...comp('spread', book && book.spreadTicks() > 3 ? -5 : 0),
     ...comp('FCA', info.fca ? -10 : 0),
   ];
+}
+
+// Liquid stocks fill a plan's lots and exit cleanly; thin ones do neither. The liquid bonus goes to
+// setups with a price trigger (a new high, swept offers, ...): an RVOL spike alone on a big cap (whose
+// RVOL and HAKA already count with the liquid ease) stopped out far more often than it reached TP1
+// in the recorded days.
+const VOLUME_ONLY = new Set<Setup>(['rvol_spike']);
+export function liquidityComponents(info: StockInfo, cfg: WatchConfig, setup?: Setup): ScoreComponent[] {
+  if (isLiquid(info, cfg)) return setup && VOLUME_ONLY.has(setup) ? [] : comp('likuid', POINTS.liquid);
+  if (info.valueMa20 > 0 && info.valueMa20 < cfg.liquidity.thinMax) return comp('tipis', POINTS.thin);
+  return [];
 }
 
 export function scoreOf(components: ScoreComponent[]): number {

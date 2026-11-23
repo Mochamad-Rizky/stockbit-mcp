@@ -1,4 +1,5 @@
 import { tickDistance } from '../../../src/core/ticks.js';
+import { flatBaseline } from '../../../src/watch/baseline.js';
 import { parseWatchConfig } from '../../../src/watch/config.js';
 import { Tape } from '../../../src/watch/market/tape.js';
 import { accumulationScore, momentumScore, Scanner } from '../../../src/watch/scanner.js';
@@ -21,8 +22,8 @@ describe('scanner scores', () => {
     const now = T0 + 600_000;
     spike(tape, 'AAAA', 270, now);
     for (let i = 0; i < 60; i += 1) tape.add([trade('BBBB', 270, 120, i % 3 ? 'buy' : 'sell', now - 290_000 + i * 4_000)]);
-    const a = momentumScore(tape.get('AAAA')!, BASE / 320, now);
-    const b = momentumScore(tape.get('BBBB')!, BASE / 320, now);
+    const a = momentumScore(tape.get('AAAA')!, flatBaseline(BASE / 320), now);
+    const b = momentumScore(tape.get('BBBB')!, flatBaseline(BASE / 320), now);
     expect(a).toBeGreaterThan(70);
     expect(b).toBeLessThan(a);
     expect(a).toBeLessThanOrEqual(100);
@@ -35,8 +36,8 @@ describe('scanner scores', () => {
     for (let i = 0; i < 180; i += 1) tape.add([trade('ACCU', i % 3 === 0 ? 502 : 500, 150, i % 4 === 0 ? 'buy' : 'sell', now - 895_000 + i * 5_000)]);
     tape.add([trade('ACCU', 502, 10, 'buy', now - 1000)]);
     const s = tape.get('ACCU')!;
-    expect(accumulationScore(s, BASE / 320, now, cfg)).toBeGreaterThanOrEqual(50);
-    expect(momentumScore(s, BASE / 320, now)).toBeLessThan(40);
+    expect(accumulationScore(s, flatBaseline(BASE / 320), now, cfg)).toBeGreaterThanOrEqual(50);
+    expect(momentumScore(s, flatBaseline(BASE / 320), now)).toBeLessThan(40);
   });
 
   it('tick distance is signed and crosses bands', () => {
@@ -75,11 +76,54 @@ describe('Scanner hysteresis', () => {
     tape.add([trade('NOBASE', 1000, 1000, 'buy', T0)]);
     const universe = Universe.of([info('THIN', BASE), info('NOBASE', 0)]);
     const sc = new Scanner(tape, universe, cfg, { momentum: () => 99, accumulation: () => 99 });
-    expect(sc.recompute(T0 + 1000)).toEqual({ momentum: [], accumulation: [] });
+    expect(sc.recompute(T0 + 1000)).toEqual({ momentum: [], accumulation: [], liquid: [] });
   });
 
   it('keeps a stock out of accumulation when it is already a momentum member', () => {
     const { sc } = scannerWith(new Map([['A', 80]]));
-    expect(sc.recompute(T0 + 1000)).toEqual({ momentum: ['A'], accumulation: [] });
+    expect(sc.recompute(T0 + 1000)).toEqual({ momentum: ['A'], accumulation: [], liquid: [] });
+  });
+});
+
+describe('liquid shortlist', () => {
+  const BIG = 50_000_000_000;
+  it('keeps the best liquid movers in focus when thin stocks fill the momentum list', () => {
+    const scores = new Map([['G1', 90], ['G2', 88], ['BIGA', 40], ['BIGB', 35], ['BIGC', 0]]);
+    const tape = new Tape();
+    for (const s of scores.keys()) tape.add([trade(s, 1000, 1000, 'buy', T0)]);
+    const universe = Universe.of([info('G1', BASE), info('G2', BASE), info('BIGA', BIG), info('BIGB', BIG), info('BIGC', BIG)]);
+    const sc = new Scanner(tape, universe, { ...cfg, scanner: { ...cfg.scanner, size: 2 }, liquidity: { ...cfg.liquidity, shortlist: 1 } }, {
+      momentum: (sym) => scores.get(sym) ?? 0,
+      accumulation: () => 0,
+    });
+    expect(sc.recompute(T0 + 1000)).toEqual({ momentum: ['G1', 'G2'], accumulation: [], liquid: ['BIGA'] });
+  });
+
+  it('a liquid stock already in the momentum list is not listed twice', () => {
+    const scores = new Map([['BIGA', 90], ['BIGB', 30]]);
+    const tape = new Tape();
+    for (const s of scores.keys()) tape.add([trade(s, 1000, 1000, 'buy', T0)]);
+    const universe = Universe.of([info('BIGA', BIG), info('BIGB', BIG)]);
+    const sc = new Scanner(tape, universe, { ...cfg, scanner: { ...cfg.scanner, size: 1 } }, {
+      momentum: (sym) => scores.get(sym) ?? 0,
+      accumulation: () => 0,
+    });
+    expect(sc.recompute(T0 + 1000)).toEqual({ momentum: ['BIGA'], accumulation: [], liquid: ['BIGB'] });
+  });
+
+  it('scores against the market baseline: the open is not a spike', () => {
+    // The same 5 minutes of trading: at 09:05 the open trades ~5x a normal minute, at 10:30 0.75x.
+    const at = (s: string) => Date.parse(`${s}+07:00`);
+    const seen: number[] = [];
+    for (const now of [at('2026-11-19T09:05:00'), at('2026-11-19T10:30:00')]) {
+      const tape = new Tape();
+      for (let i = 0; i < 60; i += 1) tape.add([trade('MIDL', 1000, 100, 'buy', now - 290_000 + i * 4_000)]);
+      const sc = new Scanner(tape, Universe.of([info('MIDL', BASE)]), cfg, {
+        momentum: (_s, t, baseline, n) => { seen.push(t.window(300, n).value / baseline(300, n)); return 50; },
+        accumulation: () => 0,
+      });
+      sc.recompute(now);
+    }
+    expect(seen[0]).toBeCloseTo(seen[1]! * (0.75 / 5));
   });
 });

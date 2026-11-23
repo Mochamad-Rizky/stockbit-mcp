@@ -1,11 +1,11 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { createWriteStream, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { AuthService, DEFAULT_HEADERS } from '../core/auth.js';
 import type { Config } from '../core/config.js';
 import { StockbitMcpError } from '../core/errors.js';
 import { StockbitHttp } from '../core/http.js';
-import type { Logger } from '../core/logger.js';
+import { createLogger, type Logger, type LogLevel } from '../core/logger.js';
 import type { SessionStore } from '../core/session-store.js';
 import { loadWatchConfig, saveWatchConfig, type WatchConfig } from '../watch/config.js';
 import { macosSender } from '../watch/notify/macos.js';
@@ -34,6 +34,24 @@ export function launchAgentPlist(node: string, cli: string, home: string): strin
 <key>StandardErrorPath</key><string>${home}/watch.log</string>
 </dict></plist>
 `;
+}
+
+// The bot's log. Under launchd stderr already goes to watch.log; run from a terminal, the log also
+// goes there, so a feed outage can be read back after the fact.
+export function watchLogger(
+  level: LogLevel,
+  home: string,
+  terminal: boolean,
+  stderr: (line: string) => void = (line) => process.stderr.write(`${line}\n`),
+): { logger: Logger; close: () => Promise<void> } {
+  if (!terminal) return { logger: createLogger(level, stderr), close: async () => {} };
+  mkdirSync(home, { recursive: true });
+  const file = createWriteStream(join(home, 'watch.log'), { flags: 'a' });
+  const logger = createLogger(level, (line) => {
+    stderr(line);
+    file.write(`${line}\n`);
+  });
+  return { logger, close: () => new Promise<void>((r) => file.end(r)) };
 }
 
 const stdoutSender: Sender = {
@@ -69,10 +87,12 @@ export interface WatchCommandDeps {
 export async function watchCommand(args: string[], d: WatchCommandDeps): Promise<number> {
   const flags = new Set(args);
   const cfg = await loadWatchConfig(d.config.home);
-  const http = new StockbitHttp({
-    bases: d.config.bases, tokens: d.auth, logger: d.logger, timeoutMs: d.config.timeoutMs, defaultHeaders: DEFAULT_HEADERS,
-    ...(d.fetch ? { fetch: d.fetch } : {}),
-  });
+  const makeHttp = (logger: Logger) =>
+    new StockbitHttp({
+      bases: d.config.bases, tokens: d.auth, logger, timeoutMs: d.config.timeoutMs, defaultHeaders: DEFAULT_HEADERS,
+      ...(d.fetch ? { fetch: d.fetch } : {}),
+    });
+  const http = makeHttp(d.logger);
 
   if (flags.has('--setup-telegram')) {
     const token = await askSecret('Token bot Telegram dari @BotFather: ');
@@ -109,24 +129,29 @@ export async function watchCommand(args: string[], d: WatchCommandDeps): Promise
   if (!session.exodus?.access.token || !userId) {
     throw new StockbitMcpError('AUTH_REQUIRED', 'No Stockbit session.', { hint: 'Run `stockbit-mcp login` first.' });
   }
-  const notifier = new Notifier({ cfg, senders: senders(cfg, flags.has('--dry-run'), d.logger), logger: d.logger });
+  const log = watchLogger(d.config.logLevel, d.config.home, Boolean(process.stderr.isTTY));
+  const logger = log.logger;
+  const notifier = new Notifier({ cfg, senders: senders(cfg, flags.has('--dry-run'), logger), logger });
   return new Promise<number>((resolveExit) => {
     const finish = (code: number) => {
-      void runner.stop().finally(() => resolveExit(code));
+      void runner
+        .stop()
+        .then(log.close)
+        .finally(() => resolveExit(code));
     };
     const runner: WatchRunner = new WatchRunner({
-      http, cfg, home: d.config.home, logger: d.logger, notifier, userId, auth: d.auth,
+      http: makeHttp(logger), cfg, home: d.config.home, logger, notifier, userId, auth: d.auth,
       onDayEnd: () => {
-        d.logger.info('trading day over, stopping');
+        logger.info('trading day over, stopping');
         finish(0);
       },
     });
     process.once('SIGINT', () => finish(0));
     process.once('SIGTERM', () => finish(0));
     runner.start().then(
-      () => d.logger.info('stockbit-mcp watch running', { dryRun: flags.has('--dry-run') }),
+      () => logger.info('stockbit-mcp watch running', { dryRun: flags.has('--dry-run') }),
       (error: unknown) => {
-        d.logger.error('watch failed to start', { error: error instanceof Error ? error.message : String(error) });
+        logger.error('watch failed to start', { error: error instanceof Error ? error.message : String(error) });
         finish(1);
       },
     );

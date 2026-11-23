@@ -1,4 +1,5 @@
 import { tickDistance, tickUp } from '../../core/ticks.js';
+import { type Baseline, isLiquid } from '../baseline.js';
 import type { WatchConfig } from '../config.js';
 import { dec1, idNum, pct0, rupiahShort } from '../fmt.js';
 import type { SymbolBook } from '../market/book.js';
@@ -16,7 +17,8 @@ export interface IntradayInput {
   tape: SymbolTape;
   book?: SymbolBook;
   info: StockInfo;
-  expectedPerMin: number;
+  // What the stock normally trades over a window (the RVOL denominator).
+  baseline: Baseline;
   cfg: WatchConfig;
   // When the accumulation setup last fired on this stock, and the top of its range then.
   accumulatedAt?: number;
@@ -49,15 +51,20 @@ export function isDistribution(tape: SymbolTape, now: number, cfg: WatchConfig):
 }
 
 export function detectIntraday(input: IntradayInput, now: number): Signal[] {
-  const { tape, book, info, expectedPerMin: e, cfg } = input;
+  const { tape, book, info, baseline, cfg } = input;
   const w5 = tape.window(300, now);
-  if (w5.value < cfg.alerts.minValue5m || e <= 0) return [];
+  const e5 = baseline(300, now);
+  if (w5.value < cfg.alerts.minValue5m || e5 <= 0) return [];
   const w15 = tape.window(900, now);
   const day = tape.day();
   const last = w5.last || day.last;
-  const rvol5 = w5.value / (5 * e);
-  const haka5 = tape.hakaShare(300, now);
-  const haka15 = tape.hakaShare(900, now);
+  const rvol5 = w5.value / e5;
+  // Raw HAKA shares go in the facts; buy-side rules and points read them with the liquid shift.
+  const rawHaka5 = tape.hakaShare(300, now);
+  const rawHaka15 = tape.hakaShare(900, now);
+  const shift = isLiquid(info, cfg) ? cfg.liquidity.hakaShift : 0;
+  const haka5 = Math.min(1, rawHaka5 + shift);
+  const haka15 = Math.min(1, rawHaka15 + shift);
 
   const solidBids = book?.walls('bid', cfg.book.wallPersistSec, now) ?? [];
   const solidOffers = book?.walls('offer', cfg.book.wallPersistSec, now) ?? [];
@@ -67,7 +74,7 @@ export function detectIntraday(input: IntradayInput, now: number): Signal[] {
   if (bidWall) refs.bidWall = bidWall.price;
   if (offerWall) refs.offerWall = offerWall.price;
 
-  const fiveMinFact = `5 menit: ${rupiahShort(w5.value)} (RVOL ${dec1(rvol5)}x), HAKA ${pct0(haka5)}`;
+  const fiveMinFact = `5 menit: ${rupiahShort(w5.value)} (RVOL ${dec1(rvol5)}x), HAKA ${pct0(rawHaka5)}`;
   const bidNear = bidWall && tickDistance(bidWall.price, last) <= 3 ? bidWall : undefined;
   const bidFact = bidNear
     ? `Bid tebal di ${idNum(bidNear.price)}: ${idNum(bidNear.shares / 100)} lot, bertahan ${ageText(now - bidNear.since)}`
@@ -89,7 +96,7 @@ export function detectIntraday(input: IntradayInput, now: number): Signal[] {
     // HAKA sweep: buyers take out several offer levels within seconds, on real money.
     const ws = tape.window(cfg.scalp.sweepWindowSec, now);
     const levels = book?.bestOffer() ? book.levelsTakenAbove(ws.first) : ws.buyValue > ws.sellValue ? tickDistance(ws.first, ws.last) : 0;
-    if (ws.trades > 0 && ws.buyValue >= cfg.scalp.sweepMinValueX * e && levels >= cfg.scalp.sweepMinLevels) {
+    if (ws.trades > 0 && ws.buyValue >= cfg.scalp.sweepMinValueX * baseline(60, now) && levels >= cfg.scalp.sweepMinLevels) {
       const to = book?.bestOffer()?.price ?? ws.last;
       add('scalp', 'haka_sweep', 'HAKA sapu offer', 'BELI',
         [fiveMinFact, `Sapu ${levels} level offer ${idNum(ws.first)}→${idNum(to)}, lot terbesar ${idNum(ws.maxLot)}`,
@@ -119,8 +126,9 @@ export function detectIntraday(input: IntradayInput, now: number): Signal[] {
 
   // RVOL spike: unusual money, buyers in control, price up.
   if (rvol5 >= cfg.day.rvolMin && haka15 >= cfg.day.hakaMin && last > w15.first) {
-    add('day', 'rvol_spike', 'Volume meledak', 'BELI', [fiveMinFact, `HAKA 15 menit ${pct0(haka15)}`, bidFact],
-      [...comp('RVOL', rvolPoints(rvol5)), ...comp('HAKA', hakaPoints(haka15)), ...comp('bid', bidNear ? POINTS.bidWall : 0)]);
+    add('day', 'rvol_spike', 'Volume meledak', 'BELI', [fiveMinFact, `HAKA 15 menit ${pct0(rawHaka15)}`, bidFact],
+      [...comp('volume meledak', POINTS.rvolSpike), ...comp('RVOL', rvolPoints(rvol5)), ...comp('HAKA', hakaPoints(haka15)),
+        ...comp('bid', bidNear ? POINTS.bidWall : 0)]);
   }
 
   if (!info.fca) {
@@ -134,10 +142,10 @@ export function detectIntraday(input: IntradayInput, now: number): Signal[] {
 
     // Accumulation: heavy trading held in a narrow range, sellers absorbed by a bid wall that stays.
     const accWall = (book?.walls('bid', cfg.book.accumWallPersistSec, now) ?? []).filter((w) => w.price <= last).sort((a, b) => b.price - a.price)[0];
-    if (accWall && accumulationScore(tape, e, now, cfg) > 0) {
-      const rvol15 = w15.value / (15 * e);
+    if (accWall && accumulationScore(tape, baseline, now, cfg) > 0) {
+      const rvol15 = w15.value / baseline(900, now);
       add('day', 'accumulation', 'Akumulasi', 'TUNGGU',
-        [`15 menit: ${rupiahShort(w15.value)} (RVOL ${dec1(rvol15)}x) di rentang ${idNum(w15.low)}–${idNum(w15.high)}, HAKI ${pct0(1 - haka15)} diserap`,
+        [`15 menit: ${rupiahShort(w15.value)} (RVOL ${dec1(rvol15)}x) di rentang ${idNum(w15.low)}–${idNum(w15.high)}, HAKI ${pct0(1 - rawHaka15)} diserap`,
           `Bid tebal di ${idNum(accWall.price)}: ${idNum(accWall.shares / 100)} lot, bertahan ${ageText(now - accWall.since)}`],
         [...comp('akumulasi', POINTS.accumulation), ...comp('RVOL', rvolPoints(rvol15)), ...comp('bid', POINTS.bidWall)]);
       out[out.length - 1]!.refs.bidWall = accWall.price;
@@ -147,7 +155,7 @@ export function detectIntraday(input: IntradayInput, now: number): Signal[] {
     if (input.accumulatedAt !== undefined && input.accumulationTop !== undefined && now - input.accumulatedAt <= MARKUP_WINDOW_MS &&
       haka5 >= 0.7 && last >= tickUp(input.accumulationTop, 2)) {
       add('day', 'markup', 'Markup mulai', 'BELI',
-        [fiveMinFact, `Keluar dari rentang akumulasi (atas ${idNum(input.accumulationTop)}), HAKA 5 menit ${pct0(haka5)}`, bidFact],
+        [fiveMinFact, `Keluar dari rentang akumulasi (atas ${idNum(input.accumulationTop)}), HAKA 5 menit ${pct0(rawHaka5)}`, bidFact],
         [...comp('markup', POINTS.markup), ...comp('RVOL', rvolPoints(rvol5)), ...comp('HAKA', hakaPoints(haka5))]);
     }
   }
@@ -155,7 +163,7 @@ export function detectIntraday(input: IntradayInput, now: number): Signal[] {
   // Distribution, unless the same tape reads as accumulation (a holding bid wall).
   if (!out.some((s) => s.setup === 'accumulation') && isDistribution(tape, now, cfg)) {
     add('day', 'distribution', 'Distribusi', 'HINDARI',
-      [`15 menit: HAKI ${pct0(1 - haka15)} dengan ${w15.bigSells} lot jual besar, harga tertahan`, fiveMinFact],
+      [`15 menit: HAKI ${pct0(1 - rawHaka15)} dengan ${w15.bigSells} lot jual besar, harga tertahan`, fiveMinFact],
       [...comp('distribusi', POINTS.distribution), ...comp('RVOL', rvolPoints(rvol5))]);
   }
   return out;

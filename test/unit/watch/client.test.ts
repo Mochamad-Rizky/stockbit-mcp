@@ -79,6 +79,22 @@ describe('DatafeedClient', () => {
     vi.useRealTimers();
   });
 
+  it('logs why and after how long the server closed the socket', async () => {
+    const lines: string[] = [];
+    const client = new DatafeedClient({
+      userId: '5', tokens: { token: async () => 'tok', refresh: async () => true },
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+      logger: createLogger('info', (l) => lines.push(l)), onEvent: () => {},
+    });
+    client.start();
+    last().open();
+    await vi.advanceTimersByTimeAsync(4_000);
+    last().drop();
+    const closed = lines.map((l) => JSON.parse(l) as Record<string, unknown>).find((l) => l.message === 'datafeed closed, reconnecting');
+    expect(closed).toMatchObject({ code: 1006, reason: 'gone', upMs: 4_000 });
+    client.stop();
+  });
+
   it('subscribes with the session token on open', async () => {
     const { client } = makeClient();
     client.start();
